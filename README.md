@@ -132,6 +132,10 @@ Local only
 └── .data/secrets/llm.json
 ```
 
+### Large WhatsApp history syncs
+
+Baileys can emit the same JID more than once inside a single history batch (for example once in `history.chats` and again in `contacts`). Nexo deduplicates those metadata entries before the PostgreSQL UPSERT so a large initial sync does not fail with `ON CONFLICT DO UPDATE command cannot affect row a second time`.
+
 ## Optional OpenAI-compatible summarizer
 
 The Settings UI can configure:
