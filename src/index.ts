@@ -17,7 +17,7 @@ const summarizer = new WhatsappSummarizer(store, settingsStore);
 const server = createBridgeServer(store, manager, settingsStore, summarizer);
 server.listen(config.port, config.host, () => {
   console.log(`WhatsApp Codex Nexo listening on http://${config.host}:${config.port}`);
-  console.log(`Storage: ${store.storageMode}${store.storageMode === "neon" ? " (schema whatsapp_nexo)" : " (.data local)"}`);
+  console.log(`Storage: ${store.storageMode}${store.storageMode === "neon" ? ` (schema whatsapp_nexo · source ${config.databaseSource})` : " (.data local)"}`);
   console.log(`LLM summarizer: ${settings.llm.enabled ? `${settings.llm.baseUrl} · ${settings.llm.model}` : "disabled"}`);
   console.log("Multiple INPUT accounts are read-only; exactly one OUTPUT account may send for Codex.");
 });
