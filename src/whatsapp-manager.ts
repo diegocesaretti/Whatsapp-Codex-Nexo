@@ -10,6 +10,9 @@ import makeWASocket, {
 import pino from "pino";
 import * as QRCode from "qrcode";
 import { randomUUID } from "node:crypto";
+import { OutputConversationStore } from "./output-conversation-store.js";
+import { isAuthorizedPhone, phoneNumberFromJid, safePhoneJid } from "./output-conversation-auth.js";
+import { AppSettingsStore } from "./settings.js";
 import { BridgeStore } from "./store.js";
 import {
   detectWhatsappMessageType,
@@ -18,7 +21,14 @@ import {
   shouldIgnoreJid,
   whatsappTimestamp,
 } from "./message.js";
-import type { AccountRecord, OutboundAudit, OutboundReplyContext, RuntimeStatus, StoredMessage } from "./types.js";
+import type {
+  AccountRecord,
+  OutboundAudit,
+  OutboundReplyContext,
+  OutputConversationMessage,
+  RuntimeStatus,
+  StoredMessage,
+} from "./types.js";
 
 type Socket = ReturnType<typeof makeWASocket>;
 type WaWebVersion = Awaited<ReturnType<typeof fetchLatestWaWebVersion>>["version"];
@@ -139,7 +149,11 @@ function emptyStatus(accountId: string): RuntimeStatus {
 export class WhatsappManager {
   private readonly sessions = new Map<string, RuntimeSession>();
 
-  constructor(private readonly store: BridgeStore) {}
+  constructor(
+    private readonly store: BridgeStore,
+    private readonly settingsStore?: AppSettingsStore,
+    private readonly conversationStore?: OutputConversationStore,
+  ) {}
 
   getStatus(accountId: string): RuntimeStatus {
     const runtime = this.sessions.get(accountId);
@@ -240,11 +254,37 @@ export class WhatsappManager {
     });
   }
 
+  async replyToOutputConversationMessage(input: {
+    inboundMessageId: string;
+    text: string;
+    reason?: string;
+  }): Promise<OutboundAudit> {
+    if (!this.settingsStore || !this.conversationStore) throw new Error("OUTPUT conversation channel is unavailable");
+    const settings = await this.settingsStore.get();
+    if (!settings.outputConversation.enabled) throw new Error("OUTPUT conversation channel is disabled");
+    const source = await this.conversationStore.get(input.inboundMessageId);
+    if (!source || source.direction !== "inbound" || !source.authorized) {
+      throw new Error("Authorized inbound OUTPUT conversation message not found");
+    }
+    if (!isAuthorizedPhone(settings.outputConversation.authorizedNumbers, source.peerPhone)) {
+      throw new Error("The sender is no longer authorized for OUTPUT conversation");
+    }
+    const audit = await this.sendText({
+      to: source.peerJid,
+      text: input.text,
+      reason: input.reason?.trim() || "Codex OUTPUT conversation reply",
+      conversationReplyToId: source.id,
+    });
+    await this.conversationStore.acknowledge([source.id]);
+    return audit;
+  }
+
   async sendText(input: {
     to: string;
     text: string;
     reason?: string;
     replyTo?: OutboundReplyContext;
+    conversationReplyToId?: string;
   }): Promise<OutboundAudit> {
     const output = await this.store.getOutputAccount();
     if (!output) throw new Error("No WhatsApp output account is configured");
@@ -269,7 +309,37 @@ export class WhatsappManager {
       sentAt: new Date().toISOString(),
     };
     await this.store.appendOutbound(audit);
+    await this.captureOutboundConversation(output, audit, input.conversationReplyToId);
     return audit;
+  }
+
+  private async captureOutboundConversation(
+    output: AccountRecord,
+    audit: OutboundAudit,
+    replyToId?: string,
+  ): Promise<void> {
+    if (!this.settingsStore || !this.conversationStore) return;
+    const settings = await this.settingsStore.get();
+    if (!settings.outputConversation.enabled) return;
+    const peerJid = safePhoneJid(audit.to);
+    const peerPhone = phoneNumberFromJid(peerJid);
+    if (!peerJid || !isAuthorizedPhone(settings.outputConversation.authorizedNumbers, peerPhone)) return;
+    const whatsappMessageId = audit.messageId ?? `audit-${audit.id}`;
+    const stored: OutputConversationMessage = {
+      id: `${output.id}:${whatsappMessageId}:outbound`,
+      accountId: output.id,
+      whatsappMessageId,
+      peerJid,
+      peerPhone: peerPhone!,
+      direction: "outbound",
+      text: audit.text,
+      messageType: "conversation",
+      senderName: output.displayName,
+      authorized: true,
+      occurredAt: audit.sentAt,
+      replyToId,
+    };
+    await this.conversationStore.append(stored);
   }
 
   private async connect(account: AccountRecord, runtime: RuntimeSession): Promise<void> {
@@ -289,8 +359,6 @@ export class WhatsappManager {
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
       logger,
-      // Baileys rc13 currently gets terminated before QR generation when it advertises
-      // WIN32/DARWIN desktop sub-platforms. Ubuntu/Chrome advertises WEB_BROWSER.
       browser: Browsers.ubuntu(account.role === "output" ? "Codex WhatsApp Output" : `Codex Input · ${account.label}`),
       printQRInTerminal: false,
       markOnlineOnConnect: false,
@@ -345,13 +413,21 @@ export class WhatsappManager {
     });
 
     socket.ev.on("messages.upsert", (upsert) => {
-      if (account.role !== "input") return;
       runtime.receivedMessages += upsert.messages.length;
       runtime.lastMessageAt = new Date();
-      const origin = upsert.type === "notify" ? "realtime" : "history";
+      if (account.role === "input") {
+        const origin = upsert.type === "notify" ? "realtime" : "history";
+        this.enqueue(runtime, async () => {
+          for (const message of upsert.messages) {
+            await this.ingestMessage(account, runtime, message, origin, socket.user?.id);
+          }
+        });
+        return;
+      }
+      if (upsert.type !== "notify") return;
       this.enqueue(runtime, async () => {
         for (const message of upsert.messages) {
-          await this.ingestMessage(account, runtime, message, origin, socket.user?.id);
+          await this.ingestOutputConversationMessage(account, runtime, message);
         }
       });
     });
@@ -383,6 +459,45 @@ export class WhatsappManager {
         runtime.updatedAt = new Date();
         console.error(`[whatsapp:${runtime.accountId}] queue task failed`, error);
       });
+  }
+
+  private async ingestOutputConversationMessage(
+    account: AccountRecord,
+    runtime: RuntimeSession,
+    message: WAMessage,
+  ): Promise<void> {
+    if (!this.settingsStore || !this.conversationStore) return;
+    const key = message.key as ExtendedMessageKey;
+    if (key.fromMe) return;
+    const remoteJid = key.remoteJid;
+    const sourceMessageId = key.id;
+    if (!remoteJid || !sourceMessageId || shouldIgnoreJid(remoteJid) || remoteJid.endsWith("@g.us")) return;
+    const remoteAltJid = key.remoteJidAlt ?? undefined;
+    const peerJid = safePhoneJid(remoteJid, remoteAltJid);
+    const peerPhone = phoneNumberFromJid(peerJid);
+    if (!peerJid || !peerPhone) return;
+
+    const settings = await this.settingsStore.get();
+    if (!settings.outputConversation.enabled || !isAuthorizedPhone(settings.outputConversation.authorizedNumbers, peerPhone)) return;
+
+    const stored: OutputConversationMessage = {
+      id: `${account.id}:${sourceMessageId}:inbound`,
+      accountId: account.id,
+      whatsappMessageId: sourceMessageId,
+      peerJid,
+      peerAltJid: remoteJid !== peerJid ? remoteJid : remoteAltJid,
+      peerPhone,
+      direction: "inbound",
+      text: extractWhatsappText(message.message),
+      messageType: detectWhatsappMessageType(message.message),
+      senderName: message.pushName ?? undefined,
+      authorized: true,
+      occurredAt: whatsappTimestamp(message.messageTimestamp).toISOString(),
+    };
+    if (await this.conversationStore.append(stored)) {
+      runtime.storedMessages += 1;
+      runtime.updatedAt = new Date();
+    }
   }
 
   private async ingestMessage(
