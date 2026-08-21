@@ -138,7 +138,7 @@ export class BridgeStore {
     return (await this.listAccounts()).find((account) => account.role === "output");
   }
 
-  async updateChatNames(accountId: string, entries: Array<{ jid: string; name?: string | null }>): Promise<void> {
+  async updateChatNames(accountId: string, entries: Array<{ jid?: string | null; name?: string | null }>): Promise<void> {
     if (!entries.length) return;
     await this.mutateMetadata(async () => {
       const file = await readJson<ChatsFile>(this.chatsPath, { version: 1, chats: {} });
@@ -220,7 +220,9 @@ export class BridgeStore {
       : accounts;
     const matches: StoredMessage[] = [];
     for (const account of selected) {
-      await this.scanFile(this.messagePath(account.id), (message) => matches.push(message));
+      await this.scanFile(this.messagePath(account.id), (message) => {
+        matches.push(message);
+      });
     }
     matches.sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt));
     return matches.slice(0, Math.max(1, Math.min(200, Math.trunc(input.limit ?? 40))));
