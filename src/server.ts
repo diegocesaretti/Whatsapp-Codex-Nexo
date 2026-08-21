@@ -63,6 +63,7 @@ export function createBridgeServer(
             enabled: settings.outputConversation.enabled,
             authorizedPeers: settings.outputConversation.authorizedNumbers.length,
           },
+          morningBrief: { enabled: settings.morningBrief.enabled },
           time: new Date().toISOString(),
         }); return;
       }
@@ -90,6 +91,7 @@ export function createBridgeServer(
           openDashboardOnLaunch: body.openDashboardOnLaunch,
           uiRefreshMs: body.uiRefreshMs,
           maxSearchResults: body.maxSearchResults,
+          morningBrief: body.morningBrief ? { ...current.morningBrief, ...body.morningBrief } : undefined,
           llm: body.llm ? { ...current.llm, ...body.llm } : undefined,
           outputConversation: body.outputConversation
             ? { ...current.outputConversation, ...body.outputConversation }
@@ -194,6 +196,24 @@ export function createBridgeServer(
         if (body.confirmedByUser !== true) { json(response, 403, { error: "confirmedByUser=true is required for outbound WhatsApp" }); return; }
         const audit = await manager.sendText({ to: body.to || "", text: body.text || "", reason: body.reason });
         json(response, 200, { sent: true, audit }); return;
+      }
+      if (request.method === "POST" && path === "/api/automation/morning-brief/send") {
+        const expected = process.env.NEXO_AUTOMATION_TOKEN?.trim();
+        const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, "").trim();
+        if (!expected || supplied !== expected) { json(response, 401, { error: "invalid_automation_token" }); return; }
+        const settings = await settingsStore.get();
+        const policy = settings.morningBrief;
+        if (!policy.enabled || !policy.destination) { json(response, 403, { error: "morning_brief_grant_disabled" }); return; }
+        const body = await readJson<{ text?: string; scheduledFor?: string; automation?: string }>(request);
+        if (body.automation !== "morning_brief") { json(response, 403, { error: "automation_not_granted" }); return; }
+        const date = body.scheduledFor?.match(/^\d{4}-\d{2}-\d{2}$/)?.[0];
+        if (!date) { json(response, 400, { error: "scheduledFor is required" }); return; }
+        const reason = `automation:morning_brief:${date}`;
+        if (await store.hasOutboundReason(reason)) { json(response, 200, { sent: false, duplicate: true }); return; }
+        const message = body.text?.trim() || "";
+        if (!message || message.length > policy.maxCharacters) { json(response, 400, { error: "message_length_outside_policy" }); return; }
+        const audit = await manager.sendText({ to: policy.destination, text: message, reason });
+        json(response, 200, { sent: true, messageId: audit.messageId }); return;
       }
       json(response, 404, { error: "not_found" });
     } catch (error) {
