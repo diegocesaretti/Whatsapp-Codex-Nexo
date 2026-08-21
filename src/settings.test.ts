@@ -17,6 +17,20 @@ test("partial LLM updates preserve unrelated settings", async () => {
     assert.equal(value.llm.enabled, true);
     assert.equal(value.llm.model, "local-model");
     assert.equal(value.llm.baseUrl, "https://api.openai.com/v1");
+    assert.equal(value.llm.defaultLookbackDays, 3);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LLM summary lookback is configurable and clamped", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wa-nexo-settings-"));
+  try {
+    const store = new AppSettingsStore(dir);
+    await store.update({ llm: { defaultLookbackDays: 14 } as never });
+    assert.equal((await store.get()).llm.defaultLookbackDays, 14);
+    await store.update({ llm: { defaultLookbackDays: 999 } as never });
+    assert.equal((await store.get()).llm.defaultLookbackDays, 90);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
