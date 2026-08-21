@@ -55,6 +55,20 @@ export interface StoredMessage {
   origin: "history" | "realtime";
 }
 
+export interface WhatsappChatSummary {
+  accountId: string;
+  accountLabel: string;
+  chatJid: string;
+  chatAltJid?: string;
+  chatName?: string;
+  kind: "direct" | "group";
+  sendTarget?: string;
+  messageCount: number;
+  lastMessageAt: string;
+  lastText?: string;
+  lastSenderName?: string;
+}
+
 export interface OutboundAudit {
   id: string;
   accountId: string;
