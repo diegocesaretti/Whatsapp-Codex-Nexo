@@ -16,7 +16,7 @@ import {
   shouldIgnoreJid,
   whatsappTimestamp,
 } from "./message.js";
-import type { AccountRecord, OutboundAudit, RuntimeStatus, StoredMessage } from "./types.js";
+import type { AccountRecord, OutboundAudit, OutboundReplyContext, RuntimeStatus, StoredMessage } from "./types.js";
 
 type Socket = ReturnType<typeof makeWASocket>;
 type ExtendedMessageKey = WAMessage["key"] & {
@@ -171,7 +171,42 @@ export class WhatsappManager {
     this.sessions.clear();
   }
 
-  async sendText(input: { to: string; text: string; reason?: string }): Promise<OutboundAudit> {
+  async replyToArchivedMessage(input: {
+    storedMessageId: string;
+    text: string;
+    reason?: string;
+  }): Promise<OutboundAudit> {
+    const resolved = await this.store.resolveMessageTarget(input.storedMessageId);
+    if (!resolved) {
+      const source = await this.store.getMessage(input.storedMessageId);
+      if (!source) throw new Error("Archived WhatsApp message not found");
+      throw new Error("Archived WhatsApp message does not expose a safe send target");
+    }
+    const source = resolved.message;
+    const replyTo: OutboundReplyContext = {
+      storedMessageId: source.id,
+      sourceAccountId: source.accountId,
+      sourceMessageId: source.sourceMessageId,
+      chatJid: source.chatJid,
+      chatAltJid: source.chatAltJid,
+      chatName: source.chatName,
+      senderName: source.senderName,
+      occurredAt: source.occurredAt,
+    };
+    return this.sendText({
+      to: resolved.sendTarget,
+      text: input.text,
+      reason: input.reason,
+      replyTo,
+    });
+  }
+
+  async sendText(input: {
+    to: string;
+    text: string;
+    reason?: string;
+    replyTo?: OutboundReplyContext;
+  }): Promise<OutboundAudit> {
     const output = await this.store.getOutputAccount();
     if (!output) throw new Error("No WhatsApp output account is configured");
     const message = input.text.trim();
@@ -190,6 +225,7 @@ export class WhatsappManager {
       to,
       text: message,
       reason: input.reason?.trim().slice(0, 500) || undefined,
+      replyTo: input.replyTo,
       messageId: result?.key.id ?? undefined,
       sentAt: new Date().toISOString(),
     };

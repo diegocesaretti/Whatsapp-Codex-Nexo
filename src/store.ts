@@ -3,7 +3,7 @@ import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:f
 import { createReadStream } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
-import type { AccountRecord, AccountRole, OutboundAudit, StoredMessage } from "./types.js";
+import type { AccountRecord, AccountRole, OutboundAudit, StoredMessage, WhatsappChatSummary } from "./types.js";
 
 interface AccountsFile {
   version: 1;
@@ -38,6 +38,26 @@ function terms(query: string): string[] {
     .map((item) => item.trim())
     .filter(Boolean)
     .slice(0, 20);
+}
+
+function isPhoneJid(jid: string | undefined): boolean {
+  return Boolean(jid?.endsWith("@s.whatsapp.net"));
+}
+
+function isGroupJid(jid: string | undefined): boolean {
+  return Boolean(jid?.endsWith("@g.us"));
+}
+
+function chatSendTarget(message: StoredMessage): string | undefined {
+  if (isGroupJid(message.chatJid)) return message.chatJid;
+  if (isGroupJid(message.chatAltJid)) return message.chatAltJid;
+  if (isPhoneJid(message.chatJid)) return message.chatJid;
+  if (isPhoneJid(message.chatAltJid)) return message.chatAltJid;
+  return undefined;
+}
+
+function chatIdentity(message: StoredMessage): string {
+  return chatSendTarget(message) ?? message.chatAltJid ?? message.chatJid;
 }
 
 export class BridgeStore {
@@ -213,6 +233,29 @@ export class BridgeStore {
     }
   }
 
+  async getMessage(id: string): Promise<StoredMessage | undefined> {
+    const cleanId = id.trim();
+    if (!cleanId) return undefined;
+    const separator = cleanId.indexOf(":");
+    if (separator <= 0) return undefined;
+    const accountId = cleanId.slice(0, separator);
+    const account = await this.getAccount(accountId);
+    if (!account || account.role !== "input") return undefined;
+    let found: StoredMessage | undefined;
+    await this.scanFile(this.messagePath(accountId), (message) => {
+      if (message.id === cleanId) found = message;
+    });
+    return found;
+  }
+
+  async resolveMessageTarget(id: string): Promise<{ message: StoredMessage; sendTarget: string } | undefined> {
+    const message = await this.getMessage(id);
+    if (!message) return undefined;
+    const sendTarget = chatSendTarget(message);
+    if (!sendTarget) return undefined;
+    return { message, sendTarget };
+  }
+
   async recentMessages(input: { accountIds?: string[]; limit?: number } = {}): Promise<StoredMessage[]> {
     const accounts = (await this.listAccounts()).filter((account) => account.role === "input");
     const selected = input.accountIds?.length
@@ -226,6 +269,73 @@ export class BridgeStore {
     }
     matches.sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt));
     return matches.slice(0, Math.max(1, Math.min(200, Math.trunc(input.limit ?? 40))));
+  }
+
+  async listChats(input: { query?: string; accountIds?: string[]; limit?: number } = {}): Promise<WhatsappChatSummary[]> {
+    const accounts = (await this.listAccounts()).filter((account) => account.role === "input");
+    const selected = input.accountIds?.length
+      ? accounts.filter((account) => input.accountIds!.includes(account.id))
+      : accounts;
+    const summaries = new Map<string, WhatsappChatSummary>();
+
+    for (const account of selected) {
+      await this.scanFile(this.messagePath(account.id), (message) => {
+        const identity = chatIdentity(message);
+        const key = `${account.id}:${identity}`;
+        const existing = summaries.get(key);
+        const kind: WhatsappChatSummary["kind"] =
+          isGroupJid(message.chatJid) || isGroupJid(message.chatAltJid) ? "group" : "direct";
+        const sendTarget = chatSendTarget(message);
+
+        if (!existing) {
+          summaries.set(key, {
+            accountId: account.id,
+            accountLabel: account.label,
+            chatJid: message.chatJid,
+            chatAltJid: message.chatAltJid,
+            chatName: message.chatName,
+            kind,
+            sendTarget,
+            messageCount: 1,
+            lastMessageAt: message.occurredAt,
+            lastText: message.text,
+            lastSenderName: message.senderName,
+          });
+          return;
+        }
+
+        existing.messageCount += 1;
+        if (!existing.chatName && message.chatName) existing.chatName = message.chatName;
+        if (!existing.chatAltJid && message.chatAltJid) existing.chatAltJid = message.chatAltJid;
+        if (!existing.sendTarget && sendTarget) existing.sendTarget = sendTarget;
+        if (Date.parse(message.occurredAt) >= Date.parse(existing.lastMessageAt)) {
+          existing.lastMessageAt = message.occurredAt;
+          existing.lastText = message.text;
+          existing.lastSenderName = message.senderName;
+          if (message.chatName) existing.chatName = message.chatName;
+        }
+      });
+    }
+
+    const needles = terms(input.query ?? "");
+    const matches = [...summaries.values()].filter((chat) => {
+      if (!needles.length) return true;
+      const haystack = [
+        chat.chatName,
+        chat.chatJid,
+        chat.chatAltJid,
+        chat.sendTarget,
+        chat.lastSenderName,
+        chat.accountLabel,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLocaleLowerCase("es-AR");
+      return needles.every((needle) => haystack.includes(needle));
+    });
+
+    matches.sort((a, b) => Date.parse(b.lastMessageAt) - Date.parse(a.lastMessageAt));
+    return matches.slice(0, Math.max(1, Math.min(200, Math.trunc(input.limit ?? 50))));
   }
 
   async searchMessages(input: {

@@ -62,6 +62,26 @@ serveStdio(() => {
   );
 
   server.registerTool(
+    "list_whatsapp_chats",
+    {
+      description:
+        "Discover WhatsApp conversations from read-only input archives. Optionally filter by a name or identifier. Results include recent activity and, when safely known, a sendTarget that prefers a phone-number JID over WhatsApp LID identifiers. Discovery never authorizes sending.",
+      inputSchema: z.object({
+        query: z.string().min(1).max(160).optional(),
+        accountIds: z.array(z.string().uuid()).max(20).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      }),
+    },
+    async ({ query, accountIds, limit }) => {
+      const params = new URLSearchParams();
+      if (query) params.set("q", query);
+      for (const id of accountIds || []) params.append("accountId", id);
+      if (limit) params.set("limit", String(limit));
+      return text(await bridge(`/api/chats?${params}`));
+    },
+  );
+
+  server.registerTool(
     "search_whatsapp",
     {
       description:
@@ -96,6 +116,28 @@ serveStdio(() => {
       if (limit) params.set("limit", String(limit));
       return text(await bridge(`/api/messages/recent?${params}`));
     },
+  );
+
+  server.registerTool(
+    "reply_whatsapp",
+    {
+      description:
+        "Send a contextual response from the dedicated output account to the same safe destination as one archived input message. This is not a native WhatsApp quoted reply because INPUT and OUTPUT are separate accounts. Use the exact stored message id returned by search_whatsapp or get_recent_whatsapp. Call only when the current human explicitly requested the outbound response.",
+      inputSchema: z.object({
+        confirmedByUser: z.literal(true).describe(
+          "Must be true only when the current human explicitly requested this outbound WhatsApp response.",
+        ),
+        storedMessageId: z.string().min(3).max(700).describe(
+          "Exact archived message id returned in the `id` field by WhatsApp search/recent tools.",
+        ),
+        text: z.string().min(1).max(12_000),
+        reason: z.string().max(500).optional(),
+      }),
+    },
+    async ({ storedMessageId, text: message, reason }) => text(await bridge("/api/output/reply", {
+      method: "POST",
+      body: JSON.stringify({ storedMessageId, text: message, reason, confirmedByUser: true }),
+    })),
   );
 
   server.registerTool(

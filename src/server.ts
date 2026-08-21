@@ -92,6 +92,15 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager)
         return;
       }
 
+      if (request.method === "GET" && path === "/api/chats") {
+        const accountIds = url.searchParams.getAll("accountId");
+        const query = url.searchParams.get("q")?.trim() || undefined;
+        const limit = Number(url.searchParams.get("limit") || 50);
+        json(response, 200, {
+          chats: await store.listChats({ query, accountIds, limit }),
+        });
+        return;
+      }
       if (request.method === "GET" && path === "/api/messages/recent") {
         const accountIds = url.searchParams.getAll("accountId");
         const limit = Number(url.searchParams.get("limit") || 40);
@@ -120,6 +129,30 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager)
             limit: Math.min(config.maxSearchResults, body.limit ?? 50),
           }),
         });
+        return;
+      }
+      if (request.method === "POST" && path === "/api/output/reply") {
+        const body = await readJson<{
+          storedMessageId?: string;
+          text?: string;
+          reason?: string;
+          confirmedByUser?: boolean;
+        }>(request);
+        if (body.confirmedByUser !== true) {
+          json(response, 403, { error: "confirmedByUser=true is required for outbound WhatsApp" });
+          return;
+        }
+        const storedMessageId = body.storedMessageId?.trim() || "";
+        if (!storedMessageId) {
+          json(response, 400, { error: "storedMessageId is required" });
+          return;
+        }
+        const audit = await manager.replyToArchivedMessage({
+          storedMessageId,
+          text: body.text || "",
+          reason: body.reason,
+        });
+        json(response, 200, { sent: true, contextualReply: true, nativeQuote: false, audit });
         return;
       }
       if (request.method === "POST" && path === "/api/output/send") {

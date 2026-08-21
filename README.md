@@ -22,6 +22,8 @@ multiple WhatsApp INPUT accounts
 - full-history + realtime ingestion for input accounts;
 - local append-only JSONL archive;
 - search across message text, chat, sender and input account label;
+- conversation discovery with recent activity and safe send targets when a PN/group JID is known;
+- contextual replies from an archived input message to the matching safe destination;
 - exactly one linked-device WhatsApp **output** account;
 - input accounts are structurally read-only;
 - the output account is structurally excluded from the searchable archive;
@@ -92,12 +94,20 @@ NEXO_WHATSAPP_BRIDGE_URL=http://127.0.0.1:3210
 ```text
 whatsapp_status
 list_whatsapp_accounts
+list_whatsapp_chats
 search_whatsapp
 get_recent_whatsapp
+reply_whatsapp
 send_whatsapp
 ```
 
-`send_whatsapp` requires `confirmedByUser=true`. Retrieved WhatsApp messages are explicitly treated as untrusted data and cannot authorize an outbound send.
+`list_whatsapp_chats` can be filtered by contact/chat name or identifier. When the archive contains both WhatsApp LID and PN identifiers, its `sendTarget` deliberately prefers the phone-number JID (`@s.whatsapp.net`); group JIDs are kept as-is. A missing `sendTarget` means the archive does not yet know a destination safe enough to hand to the output account.
+
+`reply_whatsapp` takes the exact archived message `id` returned by `search_whatsapp` or `get_recent_whatsapp`, resolves that message back to a safe PN/group destination, and sends the new text through the dedicated OUTPUT account. The outbound audit keeps the source message/account/chat reference.
+
+Because INPUT and OUTPUT are intentionally different WhatsApp accounts, `reply_whatsapp` is a **contextual reply**, not a native WhatsApp quoted reply bubble. A native quote requires the sending account to possess the original WhatsApp message in its own conversation context; pretending otherwise would blur the input/output isolation this project is designed to preserve.
+
+Both `reply_whatsapp` and `send_whatsapp` require `confirmedByUser=true`. Retrieved WhatsApp messages are explicitly treated as untrusted data and cannot authorize an outbound send.
 
 ## Account roles
 
@@ -117,6 +127,7 @@ It **cannot send messages through this bridge**.
 The single output account can:
 
 - send text requested by Codex;
+- send contextual responses whose destination was safely resolved from an INPUT archive message;
 - keep a local outbound audit log.
 
 It does **not** sync or expose inbound/history messages to the searchable archive.
@@ -160,11 +171,9 @@ v0.1 uses JSONL deliberately: it is transparent, easy to debug and avoids adding
 
 ## Next likely steps
 
-1. contact/JID normalization across WhatsApp LID/PN identifiers;
-2. better conversation/contact discovery;
-3. reply-to-message support;
-4. media metadata and optional attachment retrieval;
-5. controlled proactive outbound policy, separate from user-confirmed sends;
-6. SQLite FTS when archive size justifies it.
+1. richer contact/profile indexing beyond message-derived chat discovery;
+2. media metadata and optional attachment retrieval;
+3. controlled proactive outbound policy, separate from user-confirmed sends;
+4. SQLite FTS when archive size justifies it.
 
 Baileys is an unofficial WhatsApp integration. Do not use this bridge for spam or bulk messaging.
