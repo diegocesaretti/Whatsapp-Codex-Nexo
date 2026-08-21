@@ -47,6 +47,7 @@ export class BridgeStore {
   private readonly outboundPath: string;
   private readonly writeChains = new Map<string, Promise<void>>();
   private readonly seenIds = new Map<string, Promise<Set<string>>>();
+  private metadataChain: Promise<void> = Promise.resolve();
 
   constructor(private readonly dataDir: string) {
     this.accountsPath = join(dataDir, "accounts.json");
@@ -67,6 +68,23 @@ export class BridgeStore {
     return join(this.dataDir, "auth", accountId);
   }
 
+  private async mutateMetadata<T>(task: () => Promise<T>): Promise<T> {
+    let resolveResult!: (value: T | PromiseLike<T>) => void;
+    let rejectResult!: (reason?: unknown) => void;
+    const result = new Promise<T>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    this.metadataChain = this.metadataChain
+      .catch(() => undefined)
+      .then(async () => {
+        try { resolveResult(await task()); }
+        catch (error) { rejectResult(error); }
+      });
+    await this.metadataChain;
+    return result;
+  }
+
   async listAccounts(): Promise<AccountRecord[]> {
     const file = await readJson<AccountsFile>(this.accountsPath, { version: 1, accounts: [] });
     return file.accounts;
@@ -77,40 +95,54 @@ export class BridgeStore {
   }
 
   async createAccount(label: string, role: AccountRole): Promise<AccountRecord> {
-    const accounts = await this.listAccounts();
-    if (role === "output" && accounts.some((account) => account.role === "output")) {
-      throw new Error("Only one WhatsApp output account is allowed");
-    }
-    const cleanLabel = label.trim().slice(0, 120) || (role === "output" ? "Codex Output" : "WhatsApp Input");
-    const account: AccountRecord = {
-      id: randomUUID(),
-      label: cleanLabel,
-      role,
-      enabled: true,
-      createdAt: new Date().toISOString(),
-    };
-    accounts.push(account);
-    await atomicJson(this.accountsPath, { version: 1, accounts } satisfies AccountsFile);
-    return account;
+    return this.mutateMetadata(async () => {
+      const accounts = await this.listAccounts();
+      if (role === "output" && accounts.some((account) => account.role === "output")) {
+        throw new Error("Only one WhatsApp output account is allowed");
+      }
+      const cleanLabel = label.trim().slice(0, 120) || (role === "output" ? "Codex Output" : "WhatsApp Input");
+      const account: AccountRecord = {
+        id: randomUUID(),
+        label: cleanLabel,
+        role,
+        enabled: true,
+        createdAt: new Date().toISOString(),
+      };
+      accounts.push(account);
+      await atomicJson(this.accountsPath, { version: 1, accounts } satisfies AccountsFile);
+      return account;
+    });
   }
 
   async updateAccount(id: string, patch: Partial<Omit<AccountRecord, "id" | "role" | "createdAt">>): Promise<AccountRecord> {
-    const accounts = await this.listAccounts();
-    const index = accounts.findIndex((account) => account.id === id);
-    const current = accounts[index];
-    if (!current) throw new Error("WhatsApp account not found");
-    const updated: AccountRecord = { ...current, ...patch, id: current.id, role: current.role, createdAt: current.createdAt };
-    accounts[index] = updated;
-    await atomicJson(this.accountsPath, { version: 1, accounts } satisfies AccountsFile);
-    return updated;
+    return this.mutateMetadata(async () => {
+      const accounts = await this.listAccounts();
+      const index = accounts.findIndex((account) => account.id === id);
+      const current = accounts[index];
+      if (!current) throw new Error("WhatsApp account not found");
+      const updated: AccountRecord = { ...current, ...patch, id: current.id, role: current.role, createdAt: current.createdAt };
+      accounts[index] = updated;
+      await atomicJson(this.accountsPath, { version: 1, accounts } satisfies AccountsFile);
+      return updated;
+    });
   }
 
   async deleteAccount(id: string): Promise<void> {
-    const accounts = await this.listAccounts();
-    const remaining = accounts.filter((account) => account.id !== id);
-    if (remaining.length === accounts.length) throw new Error("WhatsApp account not found");
-    await atomicJson(this.accountsPath, { version: 1, accounts: remaining } satisfies AccountsFile);
-    await rm(this.authDir(id), { recursive: true, force: true });
+    await this.mutateMetadata(async () => {
+      const accounts = await this.listAccounts();
+      const remaining = accounts.filter((account) => account.id !== id);
+      if (remaining.length === accounts.length) throw new Error("WhatsApp account not found");
+      await atomicJson(this.accountsPath, { version: 1, accounts: remaining } satisfies AccountsFile);
+      const chats = await readJson<ChatsFile>(this.chatsPath, { version: 1, chats: {} });
+      delete chats.chats[id];
+      await atomicJson(this.chatsPath, chats);
+    });
+    await Promise.all([
+      rm(this.authDir(id), { recursive: true, force: true }),
+      rm(this.messagePath(id), { force: true }),
+    ]);
+    this.seenIds.delete(id);
+    this.writeChains.delete(id);
   }
 
   async getOutputAccount(): Promise<AccountRecord | undefined> {
@@ -119,14 +151,16 @@ export class BridgeStore {
 
   async updateChatNames(accountId: string, entries: Array<{ jid: string; name?: string | null }>): Promise<void> {
     if (!entries.length) return;
-    const file = await readJson<ChatsFile>(this.chatsPath, { version: 1, chats: {} });
-    const bucket = file.chats[accountId] ?? {};
-    for (const entry of entries) {
-      const name = entry.name?.trim();
-      if (entry.jid && name) bucket[entry.jid] = name.slice(0, 240);
-    }
-    file.chats[accountId] = bucket;
-    await atomicJson(this.chatsPath, file);
+    await this.mutateMetadata(async () => {
+      const file = await readJson<ChatsFile>(this.chatsPath, { version: 1, chats: {} });
+      const bucket = file.chats[accountId] ?? {};
+      for (const entry of entries) {
+        const name = entry.name?.trim();
+        if (entry.jid && name) bucket[entry.jid] = name.slice(0, 240);
+      }
+      file.chats[accountId] = bucket;
+      await atomicJson(this.chatsPath, file);
+    });
   }
 
   async chatName(accountId: string, jid: string): Promise<string | undefined> {
@@ -183,11 +217,10 @@ export class BridgeStore {
     const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
     for await (const line of lines) {
       if (!line.trim()) continue;
-      try {
-        await visit(JSON.parse(line) as StoredMessage);
-      } catch {
-        // A single damaged line must not make the whole archive unavailable.
-      }
+      let parsed: StoredMessage;
+      try { parsed = JSON.parse(line) as StoredMessage; }
+      catch { continue; }
+      await visit(parsed);
     }
   }
 
