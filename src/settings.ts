@@ -54,6 +54,10 @@ function clampFloat(value: unknown, min: number, max: number, fallback: number):
   return Math.max(min, Math.min(max, n));
 }
 
+function defined<T extends object>(value: T): Partial<T> {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as Partial<T>;
+}
+
 export class AppSettingsStore {
   private readonly path: string;
   private readonly llmSecretPath: string;
@@ -75,10 +79,12 @@ export class AppSettingsStore {
 
   async update(patch: Partial<AppSettings>): Promise<AppSettings> {
     const current = await this.get();
+    const top = defined(patch);
+    const llmPatch = patch.llm ? defined(patch.llm) : {};
     const next = this.normalize({
       ...current,
-      ...patch,
-      llm: patch.llm ? { ...current.llm, ...patch.llm } : current.llm,
+      ...top,
+      llm: { ...current.llm, ...llmPatch },
     });
     await mkdir(dirname(this.path), { recursive: true });
     await writeFile(this.path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
@@ -110,12 +116,12 @@ export class AppSettingsStore {
   private normalize(value: Partial<AppSettings>): AppSettings {
     const llm = value.llm ?? defaults.llm;
     return {
-      autoConnectLinkedAccounts: value.autoConnectLinkedAccounts !== false,
-      openDashboardOnLaunch: value.openDashboardOnLaunch !== false,
+      autoConnectLinkedAccounts: value.autoConnectLinkedAccounts ?? defaults.autoConnectLinkedAccounts,
+      openDashboardOnLaunch: value.openDashboardOnLaunch ?? defaults.openDashboardOnLaunch,
       uiRefreshMs: clampInt(value.uiRefreshMs, 500, 10_000, defaults.uiRefreshMs),
       maxSearchResults: clampInt(value.maxSearchResults, 10, 200, defaults.maxSearchResults),
       llm: {
-        enabled: llm.enabled === true,
+        enabled: llm.enabled ?? defaults.llm.enabled,
         baseUrl: (llm.baseUrl?.trim() || defaults.llm.baseUrl).replace(/\/$/, ""),
         model: llm.model?.trim().slice(0, 200) || defaults.llm.model,
         temperature: clampFloat(llm.temperature, 0, 2, defaults.llm.temperature),
