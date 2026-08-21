@@ -1,6 +1,8 @@
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  fetchLatestBaileysVersion,
+  fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
   useMultiFileAuthState,
   type WAMessage,
@@ -19,6 +21,7 @@ import {
 import type { AccountRecord, OutboundAudit, OutboundReplyContext, RuntimeStatus, StoredMessage } from "./types.js";
 
 type Socket = ReturnType<typeof makeWASocket>;
+type WaWebVersion = Awaited<ReturnType<typeof fetchLatestWaWebVersion>>["version"];
 type ExtendedMessageKey = WAMessage["key"] & {
   remoteJidAlt?: string | null;
   participantAlt?: string | null;
@@ -54,6 +57,31 @@ const NON_RECONNECTABLE = new Set<number>([
   DisconnectReason.multideviceMismatch,
 ]);
 
+let waVersionPromise: Promise<WaWebVersion | undefined> | undefined;
+
+async function resolveWaWebVersion(): Promise<WaWebVersion | undefined> {
+  if (!waVersionPromise) {
+    waVersionPromise = (async () => {
+      try {
+        const latest = await fetchLatestWaWebVersion();
+        console.log(`[whatsapp] using live WA Web version ${latest.version.join(".")}`);
+        return latest.version;
+      } catch (liveError) {
+        console.warn("[whatsapp] live WA Web version lookup failed; trying Baileys fallback", liveError);
+        try {
+          const fallback = await fetchLatestBaileysVersion();
+          console.log(`[whatsapp] using Baileys fallback version ${fallback.version.join(".")}`);
+          return fallback.version;
+        } catch (fallbackError) {
+          console.warn("[whatsapp] WA version lookup failed; using library default", fallbackError);
+          return undefined;
+        }
+      }
+    })();
+  }
+  return waVersionPromise;
+}
+
 function disconnectStatusCode(error: unknown): number | undefined {
   if (!error || typeof error !== "object") return undefined;
   const value = error as { output?: { statusCode?: number }; statusCode?: number };
@@ -66,6 +94,17 @@ function disconnectMessage(error: unknown): string | undefined {
     return String((error as { message?: unknown }).message ?? "");
   }
   return undefined;
+}
+
+function pairingError(statusCode: number | undefined, message: string | undefined): string | undefined {
+  if (statusCode === 405) {
+    return `WhatsApp rejected the pairing client (405/client_too_old). Nexo resolved the live WA Web version and will retry${message ? `: ${message}` : "."}`;
+  }
+  if (statusCode === 428) {
+    return `WhatsApp terminated the pairing handshake (428). Nexo now advertises a WEB_BROWSER profile instead of Windows Desktop${message ? `: ${message}` : "."}`;
+  }
+  if (statusCode !== undefined) return message || `WhatsApp disconnected with status ${statusCode}`;
+  return message;
 }
 
 function publicStatus(runtime: RuntimeSession): RuntimeStatus {
@@ -242,13 +281,17 @@ export class WhatsappManager {
     runtime.updatedAt = new Date();
 
     const { state, saveCreds } = await useMultiFileAuthState(this.store.authDir(account.id));
+    const version = await resolveWaWebVersion();
     const socket = makeWASocket({
+      ...(version ? { version } : {}),
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
       logger,
-      browser: Browsers.windows(account.role === "output" ? "Codex WhatsApp Output" : `Codex Input · ${account.label}`),
+      // Baileys rc13 currently gets terminated before QR generation when it advertises
+      // WIN32/DARWIN desktop sub-platforms. Ubuntu/Chrome advertises WEB_BROWSER.
+      browser: Browsers.ubuntu(account.role === "output" ? "Codex WhatsApp Output" : `Codex Input · ${account.label}`),
       printQRInTerminal: false,
       markOnlineOnConnect: false,
       syncFullHistory: account.role === "input",
@@ -273,6 +316,7 @@ export class WhatsappManager {
             if (runtime.generation !== generation) return;
             runtime.qrDataUrl = dataUrl;
             runtime.state = "qr";
+            runtime.lastError = undefined;
             runtime.updatedAt = new Date();
           })
           .catch((error) => {
@@ -400,14 +444,14 @@ export class WhatsappManager {
 
     if (statusCode !== undefined && NON_RECONNECTABLE.has(statusCode)) {
       runtime.state = statusCode === DisconnectReason.loggedOut ? "logged_out" : "error";
-      runtime.lastError = message || `WhatsApp disconnected with status ${statusCode}`;
+      runtime.lastError = pairingError(statusCode, message);
       await this.store.updateAccount(account.id, { lastError: runtime.lastError }).catch(() => undefined);
       return;
     }
 
     runtime.reconnectAttempt += 1;
     runtime.state = "reconnecting";
-    runtime.lastError = message;
+    runtime.lastError = pairingError(statusCode, message);
     const delay = Math.min(30_000, 1_000 * 2 ** Math.min(runtime.reconnectAttempt, 5));
     runtime.reconnectTimer = setTimeout(() => {
       runtime.reconnectTimer = undefined;
