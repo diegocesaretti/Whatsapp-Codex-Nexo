@@ -213,7 +213,7 @@ export class OutputConversationStore {
       const result = await this.pool.query(
         `UPDATE whatsapp_nexo.output_conversation_messages
          SET acknowledged_at = COALESCE(acknowledged_at, $2)
-         WHERE id = ANY($1::uuid[]) AND direction='inbound' AND authorized=true`,
+         WHERE id = ANY($1::text[]) AND direction='inbound' AND authorized=true`,
         [clean, now],
       );
       return result.rowCount ?? 0;
