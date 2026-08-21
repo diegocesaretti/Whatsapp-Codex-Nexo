@@ -138,7 +138,7 @@ export class BridgeStore {
     return (await this.listAccounts()).find((account) => account.role === "output");
   }
 
-  async updateChatNames(accountId: string, entries: Array<{ jid: string; name?: string | null }>): Promise<void> {
+  async updateChatNames(accountId: string, entries: Array<{ jid?: string | null; name?: string | null }>): Promise<void> {
     if (!entries.length) return;
     await this.mutateMetadata(async () => {
       const file = await readJson<ChatsFile>(this.chatsPath, { version: 1, chats: {} });
