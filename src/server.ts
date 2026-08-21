@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 import { config } from "./config.js";
+import { AppSettingsStore, getWindowsAutostart, setWindowsAutostart } from "./settings.js";
 import { BridgeStore } from "./store.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 import { renderAdminPage } from "./ui.js";
@@ -30,10 +31,7 @@ function json(response: ServerResponse, status: number, body: unknown): void {
 }
 
 function html(response: ServerResponse, body: string): void {
-  response.writeHead(200, {
-    "content-type": "text/html; charset=utf-8",
-    "cache-control": "no-store",
-  });
+  response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
   response.end(body);
 }
 
@@ -41,7 +39,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function createBridgeServer(store: BridgeStore, manager: WhatsappManager) {
+export function createBridgeServer(store: BridgeStore, manager: WhatsappManager, settingsStore: AppSettingsStore) {
   return createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${request.headers.host || `${config.host}:${config.port}`}`);
     const path = url.pathname;
@@ -51,19 +49,51 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager)
         return;
       }
       if (request.method === "GET" && path === "/health") {
-        json(response, 200, { ok: true, product: "WhatsApp Codex Nexo", time: new Date().toISOString() });
+        json(response, 200, { ok: true, product: "WhatsApp Codex Nexo", storage: store.storageMode, time: new Date().toISOString() });
+        return;
+      }
+      if (request.method === "GET" && path === "/api/settings") {
+        json(response, 200, {
+          settings: await settingsStore.get(),
+          windowsAutostart: await getWindowsAutostart(),
+          platform: process.platform,
+          storage: {
+            mode: store.storageMode,
+            databaseConfigured: Boolean(config.databaseUrl),
+            schema: store.storageMode === "neon" ? "whatsapp_nexo" : undefined,
+            dataDir: config.dataDir,
+          },
+          server: { host: config.host, port: config.port },
+        });
+        return;
+      }
+      if (request.method === "PUT" && path === "/api/settings") {
+        const body = await readJson<{
+          autoConnectLinkedAccounts?: boolean;
+          openDashboardOnLaunch?: boolean;
+          uiRefreshMs?: number;
+          maxSearchResults?: number;
+          windowsAutostart?: boolean;
+        }>(request);
+        const settings = await settingsStore.update({
+          autoConnectLinkedAccounts: body.autoConnectLinkedAccounts,
+          openDashboardOnLaunch: body.openDashboardOnLaunch,
+          uiRefreshMs: body.uiRefreshMs,
+          maxSearchResults: body.maxSearchResults,
+        });
+        const windowsAutostart = body.windowsAutostart === undefined
+          ? await getWindowsAutostart()
+          : await setWindowsAutostart(body.windowsAutostart);
+        json(response, 200, { settings, windowsAutostart, restartRecommended: true });
         return;
       }
       if (request.method === "GET" && path === "/api/state") {
-        const accounts = await store.listAccounts();
+        const [accounts, settings] = await Promise.all([store.listAccounts(), settingsStore.get()]);
         json(response, 200, {
           accounts: accounts.map((account) => ({ ...account, runtime: manager.getStatus(account.id) })),
-          policy: {
-            multipleInputs: true,
-            singleOutput: true,
-            inputAccountsCanSend: false,
-            outputAccountIsIndexed: false,
-          },
+          settings,
+          storage: store.storageMode,
+          policy: { multipleInputs: true, singleOutput: true, inputAccountsCanSend: false, outputAccountIsIndexed: false },
         });
         return;
       }
@@ -73,8 +103,7 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager)
           json(response, 400, { error: "role must be input or output" });
           return;
         }
-        const account = await store.createAccount(body.label || "", body.role);
-        json(response, 201, account);
+        json(response, 201, await store.createAccount(body.label || "", body.role));
         return;
       }
 
@@ -86,8 +115,7 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager)
           await manager.logout(accountId);
           json(response, 200, { ok: true });
         } else {
-          const runtime = action === "restart" ? await manager.restart(accountId) : await manager.start(accountId);
-          json(response, 200, runtime);
+          json(response, 200, action === "restart" ? await manager.restart(accountId) : await manager.start(accountId));
         }
         return;
       }
@@ -96,9 +124,7 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager)
         const accountIds = url.searchParams.getAll("accountId");
         const query = url.searchParams.get("q")?.trim() || undefined;
         const limit = Number(url.searchParams.get("limit") || 50);
-        json(response, 200, {
-          chats: await store.listChats({ query, accountIds, limit }),
-        });
+        json(response, 200, { chats: await store.listChats({ query, accountIds, limit }) });
         return;
       }
       if (request.method === "GET" && path === "/api/messages/recent") {
@@ -108,36 +134,26 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager)
         return;
       }
       if (request.method === "POST" && path === "/api/messages/search") {
-        const body = await readJson<{
-          query?: string;
-          accountIds?: string[];
-          after?: string;
-          before?: string;
-          limit?: number;
-        }>(request);
+        const body = await readJson<{ query?: string; accountIds?: string[]; after?: string; before?: string; limit?: number }>(request);
         const query = body.query?.trim() || "";
         if (query.length < 2) {
           json(response, 400, { error: "query must contain at least 2 characters" });
           return;
         }
+        const settings = await settingsStore.get();
         json(response, 200, {
           messages: await store.searchMessages({
             query,
             accountIds: body.accountIds,
             after: body.after,
             before: body.before,
-            limit: Math.min(config.maxSearchResults, body.limit ?? 50),
+            limit: Math.min(settings.maxSearchResults, body.limit ?? 50),
           }),
         });
         return;
       }
       if (request.method === "POST" && path === "/api/output/reply") {
-        const body = await readJson<{
-          storedMessageId?: string;
-          text?: string;
-          reason?: string;
-          confirmedByUser?: boolean;
-        }>(request);
+        const body = await readJson<{ storedMessageId?: string; text?: string; reason?: string; confirmedByUser?: boolean }>(request);
         if (body.confirmedByUser !== true) {
           json(response, 403, { error: "confirmedByUser=true is required for outbound WhatsApp" });
           return;
@@ -147,30 +163,17 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager)
           json(response, 400, { error: "storedMessageId is required" });
           return;
         }
-        const audit = await manager.replyToArchivedMessage({
-          storedMessageId,
-          text: body.text || "",
-          reason: body.reason,
-        });
+        const audit = await manager.replyToArchivedMessage({ storedMessageId, text: body.text || "", reason: body.reason });
         json(response, 200, { sent: true, contextualReply: true, nativeQuote: false, audit });
         return;
       }
       if (request.method === "POST" && path === "/api/output/send") {
-        const body = await readJson<{
-          to?: string;
-          text?: string;
-          reason?: string;
-          confirmedByUser?: boolean;
-        }>(request);
+        const body = await readJson<{ to?: string; text?: string; reason?: string; confirmedByUser?: boolean }>(request);
         if (body.confirmedByUser !== true) {
           json(response, 403, { error: "confirmedByUser=true is required for outbound WhatsApp" });
           return;
         }
-        const audit = await manager.sendText({
-          to: body.to || "",
-          text: body.text || "",
-          reason: body.reason,
-        });
+        const audit = await manager.sendText({ to: body.to || "", text: body.text || "", reason: body.reason });
         json(response, 200, { sent: true, audit });
         return;
       }
