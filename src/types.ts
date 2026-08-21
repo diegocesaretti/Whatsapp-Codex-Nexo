@@ -90,3 +90,22 @@ export interface OutboundAudit {
   messageId?: string;
   sentAt: string;
 }
+
+export type OutputConversationDirection = "inbound" | "outbound";
+
+export interface OutputConversationMessage {
+  id: string;
+  accountId?: string;
+  whatsappMessageId: string;
+  peerJid: string;
+  peerAltJid?: string;
+  peerPhone: string;
+  direction: OutputConversationDirection;
+  text?: string;
+  messageType?: string;
+  senderName?: string;
+  authorized: boolean;
+  occurredAt: string;
+  replyToId?: string;
+  acknowledgedAt?: string;
+}
