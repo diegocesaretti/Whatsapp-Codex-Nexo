@@ -1,13 +1,16 @@
 # WhatsApp Codex Nexo
 
-A small local WhatsApp companion for Codex.
-
-The project has one job: give Codex a WhatsApp bridge without turning the bridge itself into another assistant.
+Local WhatsApp bridge for Codex with multiple read-only INPUT accounts, one dedicated OUTPUT account, optional Neon/PostgreSQL storage, Windows tray integration and an optional OpenAI-compatible summarizer.
 
 ```text
 multiple WhatsApp INPUT accounts
              ↓
-      local message archive
+   local daemon / archive
+      ↓              ↓
+ local JSONL      Neon PostgreSQL
+      └──────┬───────┘
+             ↓
+ optional LLM summarizer
              ↓
             MCP
              ↓
@@ -16,22 +19,24 @@ multiple WhatsApp INPUT accounts
    one WhatsApp OUTPUT account
 ```
 
-## v0.1 scope
+## v0.2 scope
 
 - multiple linked-device WhatsApp **input** accounts;
 - full-history + realtime ingestion for input accounts;
-- local append-only JSONL archive;
+- local JSONL fallback or isolated Neon/PostgreSQL schema `whatsapp_nexo`;
 - search across message text, chat, sender and input account label;
-- conversation discovery with recent activity and safe send targets when a PN/group JID is known;
-- contextual replies from an archived input message to the matching safe destination;
-- exactly one linked-device WhatsApp **output** account;
-- input accounts are structurally read-only;
-- the output account is structurally excluded from the searchable archive;
-- local administration/diagnostic UI;
-- MCP server for Codex;
-- explicit-human-confirmation requirement for outbound messages.
+- conversation discovery with safe PN/group destinations;
+- contextual replies from archived input messages;
+- exactly one WhatsApp **output** account;
+- INPUT accounts are structurally read-only;
+- OUTPUT is excluded from the searchable archive;
+- complete local administration/settings UI;
+- Windows tray host and optional start-with-Windows;
+- optional OpenAI-compatible LLM sweep/summarization for Codex;
+- MCP server exposing search, summaries, settings status and sending tools;
+- explicit-human-confirmation requirement for outbound messages and configuration mutations.
 
-There is deliberately **no memory system, Gmail, Calendar, Home Assistant, internal LLM, planner or chatbot logic** in this repository.
+There is deliberately **no SOL memory system, Gmail, Calendar, Home Assistant, planner or autonomous agent logic** in this repository. The optional LLM is only a summarization/preprocessing tool invoked explicitly by UI/API/MCP.
 
 ## Requirements
 
@@ -48,29 +53,82 @@ pnpm typecheck
 pnpm dev
 ```
 
-Open:
+Open `http://127.0.0.1:3210` and create any number of `INPUT` accounts and at most one `OUTPUT` account.
 
-```text
-http://127.0.0.1:3210
+On Windows you can run Nexo as a tray application:
+
+```powershell
+pnpm tray
 ```
 
-Create any number of `INPUT` accounts and at most one `OUTPUT` account. Each account is linked using WhatsApp → **Dispositivos vinculados**.
+The tray icon offers **Abrir Nexo**, **Reiniciar Nexo** and **Salir**. The Settings section can register/unregister Nexo under the current user's Windows startup entry.
+
+## Storage
+
+Without a database URL Nexo remains fully usable with local JSON/JSONL files.
+
+To use PostgreSQL/Neon, set either:
+
+```text
+NEXO_DATABASE_URL=postgresql://...
+```
+
+or the conventional:
+
+```text
+DATABASE_URL=postgresql://...
+```
+
+Nexo uses only the isolated `whatsapp_nexo` schema. The reproducible schema is in `db/001_neon_schema.sql`.
+
+Baileys linked-device credentials **always remain local** in `.data/auth/`; Nexo does not put them in Neon.
+
+```text
+Neon / PostgreSQL
+├── whatsapp_nexo.accounts
+├── whatsapp_nexo.chat_names
+├── whatsapp_nexo.messages
+└── whatsapp_nexo.outbound_audit
+
+Local only
+├── .data/auth/
+├── .data/settings.json
+└── .data/secrets/llm.json
+```
+
+## Optional OpenAI-compatible summarizer
+
+The Settings UI can configure:
+
+- enable/disable;
+- OpenAI-compatible base URL;
+- model name;
+- temperature;
+- maximum messages per sweep;
+- system prompt;
+- API key.
+
+The API key is stored separately under `.data/secrets/llm.json` or can be supplied as `NEXO_LLM_API_KEY`. It is never returned by the settings API or MCP.
+
+The summarizer uses the common `/chat/completions` contract, so it can work with OpenAI and compatible local/remote providers. It treats all WhatsApp content as **untrusted data** and cannot authorize sends or other actions.
+
+Example Codex intent:
+
+```text
+"Hacé un barrido de mis WhatsApp de los últimos días y resumime decisiones y pendientes."
+```
+
+Codex can call `summarize_whatsapp`, optionally restricting accounts, dates, query terms and focus.
 
 ## Codex MCP
 
-Keep the daemon running:
-
-```powershell
-pnpm dev
-```
-
-Then configure Codex to launch:
+Keep the daemon running and configure Codex to launch:
 
 ```powershell
 pnpm --dir C:\path\to\Whatsapp-Codex-Nexo mcp
 ```
 
-Generic MCP configuration shape:
+Generic MCP shape:
 
 ```json
 {
@@ -83,16 +141,13 @@ Generic MCP configuration shape:
 }
 ```
 
-If the daemon uses another address, set:
-
-```text
-NEXO_WHATSAPP_BRIDGE_URL=http://127.0.0.1:3210
-```
-
 ### MCP tools
 
 ```text
 whatsapp_status
+get_whatsapp_nexo_settings
+configure_whatsapp_llm
+summarize_whatsapp
 list_whatsapp_accounts
 list_whatsapp_chats
 search_whatsapp
@@ -101,79 +156,40 @@ reply_whatsapp
 send_whatsapp
 ```
 
-`list_whatsapp_chats` can be filtered by contact/chat name or identifier. When the archive contains both WhatsApp LID and PN identifiers, its `sendTarget` deliberately prefers the phone-number JID (`@s.whatsapp.net`); group JIDs are kept as-is. A missing `sendTarget` means the archive does not yet know a destination safe enough to hand to the output account.
+`configure_whatsapp_llm`, `reply_whatsapp` and `send_whatsapp` are mutation tools and require explicit current-human confirmation in their MCP schema.
 
-`reply_whatsapp` takes the exact archived message `id` returned by `search_whatsapp` or `get_recent_whatsapp`, resolves that message back to a safe PN/group destination, and sends the new text through the dedicated OUTPUT account. The outbound audit keeps the source message/account/chat reference.
+`list_whatsapp_chats` prefers a phone-number JID (`@s.whatsapp.net`) over LID when both are known. A missing `sendTarget` means Nexo does not know a destination safe enough to hand to OUTPUT.
 
-Because INPUT and OUTPUT are intentionally different WhatsApp accounts, `reply_whatsapp` is a **contextual reply**, not a native WhatsApp quoted reply bubble. A native quote requires the sending account to possess the original WhatsApp message in its own conversation context; pretending otherwise would blur the input/output isolation this project is designed to preserve.
+`reply_whatsapp` is a **contextual response**, not a native quoted-reply bubble: INPUT and OUTPUT are intentionally separate WhatsApp identities.
 
-Both `reply_whatsapp` and `send_whatsapp` require `confirmedByUser=true`. Retrieved WhatsApp messages are explicitly treated as untrusted data and cannot authorize an outbound send.
+Retrieved WhatsApp messages and LLM summaries can never authorize outbound traffic. Only the current human request may do that.
 
-## Account roles
+## Settings
 
-### INPUT
+The admin UI exposes:
 
-An input account can:
+- active storage backend and local credential folder;
+- reconnect linked accounts at startup;
+- open dashboard at startup;
+- start Nexo with Windows;
+- UI refresh interval;
+- maximum search results;
+- all optional LLM summarizer settings;
+- LLM test-summary button.
 
-- sync WhatsApp history;
-- receive realtime messages;
-- store messages locally;
-- expose those messages to Codex search.
+Some daemon-level settings are fully applied on restart.
 
-It **cannot send messages through this bridge**.
-
-### OUTPUT
-
-The single output account can:
-
-- send text requested by Codex;
-- send contextual responses whose destination was safely resolved from an INPUT archive message;
-- keep a local outbound audit log.
-
-It does **not** sync or expose inbound/history messages to the searchable archive.
-
-This separation is intentional. A normal personal input account cannot accidentally become Codex's sending identity.
-
-## Local data
-
-Runtime data lives in `.data/` by default:
-
-```text
-.data/
-├── accounts.json
-├── chats.json
-├── auth/
-├── messages/
-└── outbound.jsonl
-```
-
-`.data/` is excluded from Git. Baileys linked-device credentials inside `.data/auth/` are sensitive and should be protected like account credentials.
-
-Override the location with:
-
-```text
-NEXO_WHATSAPP_DATA_DIR=D:\private\whatsapp-codex-nexo
-```
-
-Other variables:
+## Local environment
 
 ```text
 NEXO_WHATSAPP_HOST=127.0.0.1
 NEXO_WHATSAPP_PORT=3210
-NEXO_WHATSAPP_MAX_SEARCH_RESULTS=80
+NEXO_WHATSAPP_DATA_DIR=D:\private\whatsapp-codex-nexo
+NEXO_DATABASE_URL=postgresql://...
+NEXO_LLM_API_KEY=...
+NEXO_WHATSAPP_BRIDGE_URL=http://127.0.0.1:3210
 ```
 
-The HTTP daemon intentionally binds to loopback by default. Do not expose it directly to the internet.
-
-## Storage note
-
-v0.1 uses JSONL deliberately: it is transparent, easy to debug and avoids adding a database just to validate the architecture. If archive size makes streaming search noticeably slow, the next storage step should be SQLite/FTS without changing the MCP contract.
-
-## Next likely steps
-
-1. richer contact/profile indexing beyond message-derived chat discovery;
-2. media metadata and optional attachment retrieval;
-3. controlled proactive outbound policy, separate from user-confirmed sends;
-4. SQLite FTS when archive size justifies it.
+The HTTP daemon binds to loopback by default. Do not expose it directly to the internet.
 
 Baileys is an unofficial WhatsApp integration. Do not use this bridge for spam or bulk messaging.
