@@ -42,9 +42,12 @@ export interface StoredMessage {
   accountLabel: string;
   sourceMessageId: string;
   chatJid: string;
+  chatAltJid?: string;
   chatName?: string;
   senderJid?: string;
+  senderAltJid?: string;
   senderName?: string;
+  addressingMode?: string;
   fromMe: boolean;
   text?: string;
   messageType?: string;
