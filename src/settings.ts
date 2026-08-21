@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
+import { normalizeAuthorizedNumbers } from "./output-conversation-auth.js";
 
 const execFileAsync = promisify(execFile);
 const AUTOSTART_VALUE = "WhatsappCodexNexo";
@@ -16,12 +17,19 @@ export interface LlmSettings {
   systemPrompt: string;
 }
 
+export interface OutputConversationSettings {
+  enabled: boolean;
+  authorizedNumbers: string[];
+  maxContextMessages: number;
+}
+
 export interface AppSettings {
   autoConnectLinkedAccounts: boolean;
   openDashboardOnLaunch: boolean;
   uiRefreshMs: number;
   maxSearchResults: number;
   llm: LlmSettings;
+  outputConversation: OutputConversationSettings;
 }
 
 const defaultLlmPrompt =
@@ -39,6 +47,11 @@ const defaults: AppSettings = {
     temperature: 0.2,
     maxInputMessages: 500,
     systemPrompt: defaultLlmPrompt,
+  },
+  outputConversation: {
+    enabled: false,
+    authorizedNumbers: [],
+    maxContextMessages: 80,
   },
 };
 
@@ -81,10 +94,12 @@ export class AppSettingsStore {
     const current = await this.get();
     const top = defined(patch);
     const llmPatch = patch.llm ? defined(patch.llm) : {};
+    const conversationPatch = patch.outputConversation ? defined(patch.outputConversation) : {};
     const next = this.normalize({
       ...current,
       ...top,
       llm: { ...current.llm, ...llmPatch },
+      outputConversation: { ...current.outputConversation, ...conversationPatch },
     });
     await mkdir(dirname(this.path), { recursive: true });
     await writeFile(this.path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
@@ -115,6 +130,7 @@ export class AppSettingsStore {
 
   private normalize(value: Partial<AppSettings>): AppSettings {
     const llm = value.llm ?? defaults.llm;
+    const outputConversation = value.outputConversation ?? defaults.outputConversation;
     return {
       autoConnectLinkedAccounts: value.autoConnectLinkedAccounts ?? defaults.autoConnectLinkedAccounts,
       openDashboardOnLaunch: value.openDashboardOnLaunch ?? defaults.openDashboardOnLaunch,
@@ -127,6 +143,11 @@ export class AppSettingsStore {
         temperature: clampFloat(llm.temperature, 0, 2, defaults.llm.temperature),
         maxInputMessages: clampInt(llm.maxInputMessages, 20, 5000, defaults.llm.maxInputMessages),
         systemPrompt: llm.systemPrompt?.trim().slice(0, 8000) || defaults.llm.systemPrompt,
+      },
+      outputConversation: {
+        enabled: outputConversation.enabled ?? defaults.outputConversation.enabled,
+        authorizedNumbers: normalizeAuthorizedNumbers(outputConversation.authorizedNumbers),
+        maxContextMessages: clampInt(outputConversation.maxContextMessages, 10, 500, defaults.outputConversation.maxContextMessages),
       },
     };
   }
