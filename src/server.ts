@@ -131,6 +131,30 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager)
         });
         return;
       }
+      if (request.method === "POST" && path === "/api/output/reply") {
+        const body = await readJson<{
+          storedMessageId?: string;
+          text?: string;
+          reason?: string;
+          confirmedByUser?: boolean;
+        }>(request);
+        if (body.confirmedByUser !== true) {
+          json(response, 403, { error: "confirmedByUser=true is required for outbound WhatsApp" });
+          return;
+        }
+        const storedMessageId = body.storedMessageId?.trim() || "";
+        if (!storedMessageId) {
+          json(response, 400, { error: "storedMessageId is required" });
+          return;
+        }
+        const audit = await manager.replyToArchivedMessage({
+          storedMessageId,
+          text: body.text || "",
+          reason: body.reason,
+        });
+        json(response, 200, { sent: true, contextualReply: true, nativeQuote: false, audit });
+        return;
+      }
       if (request.method === "POST" && path === "/api/output/send") {
         const body = await readJson<{
           to?: string;
