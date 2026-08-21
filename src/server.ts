@@ -41,7 +41,7 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager,
     try {
       if (request.method === "GET" && path === "/") { html(response, renderAdminPage()); return; }
       if (request.method === "GET" && path === "/health") {
-        json(response, 200, { ok: true, product: "WhatsApp Codex Nexo", storage: store.storageMode, time: new Date().toISOString() }); return;
+        json(response, 200, { ok: true, product: "WhatsApp Codex Nexo", storage: store.storageMode, databaseSource: config.databaseSource, time: new Date().toISOString() }); return;
       }
       if (request.method === "GET" && path === "/api/settings") {
         const publicSettings = await settingsStore.publicState();
@@ -49,7 +49,13 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager,
           ...publicSettings,
           windowsAutostart: await getWindowsAutostart(),
           platform: process.platform,
-          storage: { mode: store.storageMode, databaseConfigured: Boolean(config.databaseUrl), schema: store.storageMode === "neon" ? "whatsapp_nexo" : undefined, dataDir: config.dataDir },
+          storage: {
+            mode: store.storageMode,
+            databaseConfigured: Boolean(config.databaseUrl),
+            databaseSource: config.databaseSource,
+            schema: store.storageMode === "neon" ? "whatsapp_nexo" : undefined,
+            dataDir: config.dataDir,
+          },
           server: { host: config.host, port: config.port },
         }); return;
       }
