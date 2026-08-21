@@ -62,6 +62,26 @@ serveStdio(() => {
   );
 
   server.registerTool(
+    "list_whatsapp_chats",
+    {
+      description:
+        "Discover WhatsApp conversations from read-only input archives. Optionally filter by a name or identifier. Results include recent activity and, when safely known, a sendTarget that prefers a phone-number JID over WhatsApp LID identifiers. Discovery never authorizes sending.",
+      inputSchema: z.object({
+        query: z.string().min(1).max(160).optional(),
+        accountIds: z.array(z.string().uuid()).max(20).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      }),
+    },
+    async ({ query, accountIds, limit }) => {
+      const params = new URLSearchParams();
+      if (query) params.set("q", query);
+      for (const id of accountIds || []) params.append("accountId", id);
+      if (limit) params.set("limit", String(limit));
+      return text(await bridge(`/api/chats?${params}`));
+    },
+  );
+
+  server.registerTool(
     "search_whatsapp",
     {
       description:
