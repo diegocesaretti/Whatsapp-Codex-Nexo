@@ -312,7 +312,7 @@ export class BridgeStore {
     if (existing) return existing;
     const promise = (async () => {
       const ids = new Set<string>();
-      await this.scanFile(this.messagePath(accountId), (message) => ids.add(message.id));
+      await this.scanFile(this.messagePath(accountId), (message) => { ids.add(message.id); });
       return ids;
     })();
     this.seenIds.set(accountId, promise);
@@ -416,7 +416,7 @@ export class BridgeStore {
     const accounts = (await this.listAccounts()).filter((account) => account.role === "input");
     const selected = input.accountIds?.length ? accounts.filter((account) => input.accountIds!.includes(account.id)) : accounts;
     const matches: StoredMessage[] = [];
-    for (const account of selected) await this.scanFile(this.messagePath(account.id), (message) => matches.push(message));
+    for (const account of selected) await this.scanFile(this.messagePath(account.id), (message) => { matches.push(message); });
     matches.sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt));
     return matches.slice(0, limit);
   }
