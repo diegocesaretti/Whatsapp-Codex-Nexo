@@ -2,11 +2,12 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { URL } from "node:url";
 import { config } from "./config.js";
 import { WhatsappSummarizer } from "./llm.js";
+import { OutputConversationStore } from "./output-conversation-store.js";
 import { AppSettingsStore, getWindowsAutostart, setWindowsAutostart } from "./settings.js";
 import { BridgeStore } from "./store.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 import { renderAdminPage } from "./ui.js";
-import type { AccountRole } from "./types.js";
+import type { AccountRole, OutputConversationMessage } from "./types.js";
 
 async function readJson<T>(request: IncomingMessage, maxBytes = 256_000): Promise<T> {
   const chunks: Buffer[] = [];
@@ -34,14 +35,36 @@ function html(response: ServerResponse, body: string): void {
 
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 
-export function createBridgeServer(store: BridgeStore, manager: WhatsappManager, settingsStore: AppSettingsStore, summarizer: WhatsappSummarizer) {
+function currentlyAuthorized(messages: OutputConversationMessage[], authorizedNumbers: string[]): OutputConversationMessage[] {
+  const allowed = new Set(authorizedNumbers);
+  return messages.filter((message) => allowed.has(message.peerPhone));
+}
+
+export function createBridgeServer(
+  store: BridgeStore,
+  manager: WhatsappManager,
+  settingsStore: AppSettingsStore,
+  summarizer: WhatsappSummarizer,
+  conversationStore: OutputConversationStore,
+) {
   return createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${request.headers.host || `${config.host}:${config.port}`}`);
     const path = url.pathname;
     try {
       if (request.method === "GET" && path === "/") { html(response, renderAdminPage()); return; }
       if (request.method === "GET" && path === "/health") {
-        json(response, 200, { ok: true, product: "WhatsApp Codex Nexo", storage: store.storageMode, databaseSource: config.databaseSource, time: new Date().toISOString() }); return;
+        const settings = await settingsStore.get();
+        json(response, 200, {
+          ok: true,
+          product: "WhatsApp Codex Nexo",
+          storage: store.storageMode,
+          databaseSource: config.databaseSource,
+          outputConversation: {
+            enabled: settings.outputConversation.enabled,
+            authorizedPeers: settings.outputConversation.authorizedNumbers.length,
+          },
+          time: new Date().toISOString(),
+        }); return;
       }
       if (request.method === "GET" && path === "/api/settings") {
         const publicSettings = await settingsStore.publicState();
@@ -68,10 +91,13 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager,
           uiRefreshMs: body.uiRefreshMs,
           maxSearchResults: body.maxSearchResults,
           llm: body.llm ? { ...current.llm, ...body.llm } : undefined,
+          outputConversation: body.outputConversation
+            ? { ...current.outputConversation, ...body.outputConversation }
+            : undefined,
         });
         if (typeof body.llmApiKey === "string") await settingsStore.setLlmApiKey(body.llmApiKey);
         const windowsAutostart = body.windowsAutostart === undefined ? await getWindowsAutostart() : await setWindowsAutostart(Boolean(body.windowsAutostart));
-        json(response, 200, { settings, llmApiKeyConfigured: Boolean(await settingsStore.getLlmApiKey()), windowsAutostart, restartRecommended: true }); return;
+        json(response, 200, { settings, llmApiKeyConfigured: Boolean(await settingsStore.getLlmApiKey()), windowsAutostart, restartRecommended: false }); return;
       }
       if (request.method === "POST" && path === "/api/llm/summarize") {
         const body = await readJson<{ query?: string; accountIds?: string[]; after?: string; before?: string; limit?: number; focus?: string }>(request);
@@ -80,8 +106,17 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager,
       if (request.method === "GET" && path === "/api/state") {
         const [accounts, settings] = await Promise.all([store.listAccounts(), settingsStore.get()]);
         json(response, 200, {
-          accounts: accounts.map((account) => ({ ...account, runtime: manager.getStatus(account.id) })), settings, storage: store.storageMode,
-          policy: { multipleInputs: true, singleOutput: true, inputAccountsCanSend: false, outputAccountIsIndexed: false },
+          accounts: accounts.map((account) => ({ ...account, runtime: manager.getStatus(account.id) })),
+          settings,
+          storage: store.storageMode,
+          policy: {
+            multipleInputs: true,
+            singleOutput: true,
+            inputAccountsCanSend: false,
+            outputAccountIsIndexed: false,
+            outputConversationAuthorizedOnly: true,
+            outputConversationDirectChatsOnly: true,
+          },
         }); return;
       }
       if (request.method === "POST" && path === "/api/accounts") {
@@ -112,6 +147,40 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager,
         const settings = await settingsStore.get();
         json(response, 200, { messages: await store.searchMessages({ query, accountIds: body.accountIds, after: body.after, before: body.before, limit: Math.min(settings.maxSearchResults, body.limit ?? 50) }) }); return;
       }
+
+      if (request.method === "GET" && path === "/api/output/conversation") {
+        const settings = await settingsStore.get();
+        if (!settings.outputConversation.enabled) { json(response, 200, { enabled: false, messages: [] }); return; }
+        const peer = url.searchParams.get("peer")?.trim() || undefined;
+        const limit = Math.min(settings.outputConversation.maxContextMessages, Number(url.searchParams.get("limit") || settings.outputConversation.maxContextMessages));
+        const messages = currentlyAuthorized(await conversationStore.list({ peer, limit }), settings.outputConversation.authorizedNumbers);
+        json(response, 200, { enabled: true, messages }); return;
+      }
+      if (request.method === "GET" && path === "/api/output/conversation/replies") {
+        const settings = await settingsStore.get();
+        if (!settings.outputConversation.enabled) { json(response, 200, { enabled: false, messages: [] }); return; }
+        const peer = url.searchParams.get("peer")?.trim() || undefined;
+        const pendingOnly = url.searchParams.get("pending") !== "false";
+        const limit = Math.min(200, Number(url.searchParams.get("limit") || 50));
+        const messages = currentlyAuthorized(
+          await conversationStore.list({ peer, limit, pendingOnly, direction: "inbound" }),
+          settings.outputConversation.authorizedNumbers,
+        );
+        json(response, 200, { enabled: true, pendingOnly, messages }); return;
+      }
+      if (request.method === "POST" && path === "/api/output/conversation/ack") {
+        const body = await readJson<{ ids?: string[] }>(request);
+        const ids = Array.isArray(body.ids) ? body.ids : [];
+        json(response, 200, { acknowledged: await conversationStore.acknowledge(ids) }); return;
+      }
+      if (request.method === "POST" && path === "/api/output/conversation/reply") {
+        const body = await readJson<{ inboundMessageId?: string; text?: string; reason?: string }>(request);
+        const inboundMessageId = body.inboundMessageId?.trim() || "";
+        if (!inboundMessageId) { json(response, 400, { error: "inboundMessageId is required" }); return; }
+        const audit = await manager.replyToOutputConversationMessage({ inboundMessageId, text: body.text || "", reason: body.reason });
+        json(response, 200, { sent: true, authorizedConversationReply: true, audit }); return;
+      }
+
       if (request.method === "POST" && path === "/api/output/reply") {
         const body = await readJson<{ storedMessageId?: string; text?: string; reason?: string; confirmedByUser?: boolean }>(request);
         if (body.confirmedByUser !== true) { json(response, 403, { error: "confirmedByUser=true is required for outbound WhatsApp" }); return; }
