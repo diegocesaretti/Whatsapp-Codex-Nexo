@@ -13,6 +13,7 @@
     "start": "tsx src/index.ts",
     "tray": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/nexo-tray.ps1",
     "mcp": "tsx src/mcp.ts",
+    "db:check": "tsx src/db-check.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test src/**/*.test.ts"
   },
