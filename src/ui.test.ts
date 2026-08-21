@@ -5,8 +5,9 @@ import { renderAdminPage } from "./ui.js";
 
 test("admin page renders syntactically valid embedded JavaScript", () => {
   const html = renderAdminPage();
-  assert.match(html, /Varias cuentas de entrada/);
-  assert.match(html, /una sola cuenta de salida/);
+  assert.match(html, /Varias cuentas INPUT observadas/);
+  assert.match(html, /Conversación bidireccional con Codex/);
+  assert.match(html, /Números autorizados/);
   const match = html.match(/<script>([\s\S]*?)<\/script>/i);
   const script = match?.[1];
   assert.ok(script);

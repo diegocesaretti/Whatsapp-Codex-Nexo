@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
+import { normalizeAuthorizedNumbers } from "./output-conversation-auth.js";
 
 const execFileAsync = promisify(execFile);
 const AUTOSTART_VALUE = "WhatsappCodexNexo";
@@ -13,7 +14,21 @@ export interface LlmSettings {
   model: string;
   temperature: number;
   maxInputMessages: number;
+  defaultLookbackDays: number;
   systemPrompt: string;
+}
+
+export interface OutputConversationSettings {
+  enabled: boolean;
+  authorizedNumbers: string[];
+  maxContextMessages: number;
+}
+
+export interface MorningBriefSettings {
+  enabled: boolean;
+  destination: string;
+  maxCharacters: number;
+  timezone: string;
 }
 
 export interface AppSettings {
@@ -22,12 +37,8 @@ export interface AppSettings {
   uiRefreshMs: number;
   maxSearchResults: number;
   llm: LlmSettings;
-  morningBrief: {
-    enabled: boolean;
-    destination: string;
-    maxCharacters: number;
-    timezone: string;
-  };
+  outputConversation: OutputConversationSettings;
+  morningBrief: MorningBriefSettings;
 }
 
 const defaultLlmPrompt =
@@ -38,14 +49,25 @@ const defaults: AppSettings = {
   openDashboardOnLaunch: true,
   uiRefreshMs: 1500,
   maxSearchResults: 80,
-  morningBrief: { enabled: false, destination: "", maxCharacters: 2000, timezone: "America/Argentina/Buenos_Aires" },
+  morningBrief: {
+    enabled: false,
+    destination: "",
+    maxCharacters: 2000,
+    timezone: "America/Argentina/Buenos_Aires",
+  },
   llm: {
     enabled: false,
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4.1-mini",
     temperature: 0.2,
     maxInputMessages: 500,
+    defaultLookbackDays: 3,
     systemPrompt: defaultLlmPrompt,
+  },
+  outputConversation: {
+    enabled: false,
+    authorizedNumbers: [],
+    maxContextMessages: 80,
   },
 };
 
@@ -88,11 +110,13 @@ export class AppSettingsStore {
     const current = await this.get();
     const top = defined(patch);
     const llmPatch = patch.llm ? defined(patch.llm) : {};
+    const conversationPatch = patch.outputConversation ? defined(patch.outputConversation) : {};
     const morningPatch = patch.morningBrief ? defined(patch.morningBrief) : {};
     const next = this.normalize({
       ...current,
       ...top,
       llm: { ...current.llm, ...llmPatch },
+      outputConversation: { ...current.outputConversation, ...conversationPatch },
       morningBrief: { ...current.morningBrief, ...morningPatch },
     });
     await mkdir(dirname(this.path), { recursive: true });
@@ -124,6 +148,7 @@ export class AppSettingsStore {
 
   private normalize(value: Partial<AppSettings>): AppSettings {
     const llm = value.llm ?? defaults.llm;
+    const outputConversation = value.outputConversation ?? defaults.outputConversation;
     const morning = value.morningBrief ?? defaults.morningBrief;
     return {
       autoConnectLinkedAccounts: value.autoConnectLinkedAccounts ?? defaults.autoConnectLinkedAccounts,
@@ -142,7 +167,13 @@ export class AppSettingsStore {
         model: llm.model?.trim().slice(0, 200) || defaults.llm.model,
         temperature: clampFloat(llm.temperature, 0, 2, defaults.llm.temperature),
         maxInputMessages: clampInt(llm.maxInputMessages, 20, 5000, defaults.llm.maxInputMessages),
+        defaultLookbackDays: clampInt(llm.defaultLookbackDays, 1, 90, defaults.llm.defaultLookbackDays),
         systemPrompt: llm.systemPrompt?.trim().slice(0, 8000) || defaults.llm.systemPrompt,
+      },
+      outputConversation: {
+        enabled: outputConversation.enabled ?? defaults.outputConversation.enabled,
+        authorizedNumbers: normalizeAuthorizedNumbers(outputConversation.authorizedNumbers),
+        maxContextMessages: clampInt(outputConversation.maxContextMessages, 10, 500, defaults.outputConversation.maxContextMessages),
       },
     };
   }

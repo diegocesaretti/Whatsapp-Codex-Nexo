@@ -19,7 +19,7 @@ multiple WhatsApp INPUT accounts
    one WhatsApp OUTPUT account
 ```
 
-## v0.2 scope
+## v0.3 scope
 
 - multiple linked-device WhatsApp **input** accounts;
 - full-history + realtime ingestion for input accounts;
@@ -28,13 +28,14 @@ multiple WhatsApp INPUT accounts
 - conversation discovery with safe PN/group destinations;
 - contextual replies from archived input messages;
 - exactly one WhatsApp **output** account;
+- optional isolated two-way OUTPUT conversation restricted to explicitly allowlisted phone numbers;
 - INPUT accounts are structurally read-only;
 - OUTPUT is excluded from the searchable archive;
 - complete local administration/settings UI;
 - Windows tray host and optional start-with-Windows;
 - optional OpenAI-compatible LLM sweep/summarization for Codex;
-- MCP server exposing search, summaries, settings status and sending tools;
-- explicit-human-confirmation requirement for outbound messages and configuration mutations.
+- MCP server exposing search, summaries, settings status, authorized OUTPUT conversation and sending tools;
+- explicit-human-confirmation requirement for normal outbound messages and configuration mutations.
 
 There is deliberately **no SOL memory system, Gmail, Calendar, Home Assistant, planner or autonomous agent logic** in this repository. The optional LLM is only a summarization/preprocessing tool invoked explicitly by UI/API/MCP.
 
@@ -113,7 +114,7 @@ You can still configure a dedicated URL directly with:
 NEXO_DATABASE_URL=postgresql://...
 ```
 
-Nexo uses only the isolated `whatsapp_nexo` schema. The reproducible schema is in `db/001_neon_schema.sql`.
+Nexo uses only the isolated `whatsapp_nexo` schema. The reproducible base schema is in `db/001_neon_schema.sql`; the isolated OUTPUT conversation table is added by `db/002_output_conversation.sql`.
 
 Baileys linked-device credentials **always remain local** in `.data/auth/`; Nexo does not put them in Neon.
 
@@ -122,13 +123,18 @@ Neon / PostgreSQL
 ├── whatsapp_nexo.accounts
 ├── whatsapp_nexo.chat_names
 ├── whatsapp_nexo.messages
-└── whatsapp_nexo.outbound_audit
+├── whatsapp_nexo.outbound_audit
+└── whatsapp_nexo.output_conversation_messages
 
 Local only
 ├── .data/auth/
 ├── .data/settings.json
 └── .data/secrets/llm.json
 ```
+
+### Large WhatsApp history syncs
+
+Baileys can emit the same JID more than once inside a single history batch (for example once in `history.chats` and again in `contacts`). Nexo deduplicates those metadata entries before the PostgreSQL UPSERT so a large initial sync does not fail with `ON CONFLICT DO UPDATE command cannot affect row a second time`.
 
 ## Optional OpenAI-compatible summarizer
 
@@ -139,20 +145,40 @@ The Settings UI can configure:
 - model name;
 - temperature;
 - maximum messages per sweep;
+- **default recent lookback window in days**;
 - system prompt;
 - API key.
 
+The default lookback window is **3 days**. If `summarize_whatsapp` receives an explicit `after` date, that date overrides the default window. This keeps old synced history available for historical searches without letting it contaminate normal daily summaries.
+
+The summarizer also instructs the LLM to prefer the newest state of each topic: an older message should not remain a pending item when later messages show it was completed, cancelled, paid, resolved or replaced. Genuine contradictions are reported with dates instead of silently choosing one.
+
 The API key is stored separately under `.data/secrets/llm.json` or can be supplied as `NEXO_LLM_API_KEY`. It is never returned by the settings API or MCP.
 
-The summarizer uses the common `/chat/completions` contract, so it can work with OpenAI and compatible local/remote providers. It treats all WhatsApp content as **untrusted data** and cannot authorize sends or other actions.
+The summarizer uses the common `/chat/completions` contract, so it can work with OpenAI and compatible local/remote providers. It treats all WhatsApp INPUT content as **untrusted data** and cannot authorize sends or other actions.
 
 Example Codex intent:
 
 ```text
-"Hacé un barrido de mis WhatsApp de los últimos días y resumime decisiones y pendientes."
+"Hacé un barrido de mis WhatsApp recientes y resumime decisiones y pendientes vigentes."
 ```
 
 Codex can call `summarize_whatsapp`, optionally restricting accounts, dates, query terms and focus.
+
+## OUTPUT conversation channel
+
+The OUTPUT account can optionally accept a narrowly scoped conversational return path for Codex:
+
+- disabled by default;
+- only direct chats;
+- only phone numbers present in the explicit allowlist;
+- groups are excluded;
+- LID-only peers without a resolvable phone-number JID are excluded;
+- inbound OUTPUT conversation is stored separately from the INPUT archive;
+- removing a number from the allowlist immediately blocks future capture and future replies to that peer;
+- replies are bound to the exact authorized inbound message and cannot redirect to another destination.
+
+This is intentionally different from the general INPUT archive. INPUT messages remain untrusted source data and cannot authorize actions.
 
 ## Codex MCP
 
@@ -182,6 +208,11 @@ whatsapp_status
 get_whatsapp_nexo_settings
 configure_whatsapp_llm
 summarize_whatsapp
+configure_codex_whatsapp_conversation
+get_codex_whatsapp_replies
+get_codex_whatsapp_conversation
+acknowledge_codex_whatsapp_replies
+reply_codex_whatsapp
 list_whatsapp_accounts
 list_whatsapp_chats
 search_whatsapp
@@ -190,7 +221,7 @@ reply_whatsapp
 send_whatsapp
 ```
 
-`configure_whatsapp_llm`, `reply_whatsapp` and `send_whatsapp` are mutation tools and require explicit current-human confirmation in their MCP schema.
+`configure_whatsapp_llm`, `configure_codex_whatsapp_conversation`, `reply_whatsapp` and `send_whatsapp` are configuration/interactive mutation tools that require explicit current-human confirmation where applicable.
 
 `get_whatsapp_nexo_settings` also reports whether storage is local or Neon and which configuration source selected the database, without exposing the connection string.
 
@@ -198,7 +229,7 @@ send_whatsapp
 
 `reply_whatsapp` is a **contextual response**, not a native quoted-reply bubble: INPUT and OUTPUT are intentionally separate WhatsApp identities.
 
-Retrieved WhatsApp messages and LLM summaries can never authorize outbound traffic. Only the current human request may do that.
+Retrieved INPUT WhatsApp messages and LLM summaries can never authorize outbound traffic. Only the current human request may do that.
 
 ### Morning Brief proactive grant
 
@@ -216,7 +247,8 @@ The admin UI exposes:
 - start Nexo with Windows;
 - UI refresh interval;
 - maximum search results;
-- all optional LLM summarizer settings;
+- OUTPUT conversation enable/disable, allowlist and context length;
+- all optional LLM summarizer settings including the default recent lookback window;
 - LLM test-summary button.
 
 Some daemon-level settings are fully applied on restart.
@@ -232,6 +264,7 @@ SOL_ROOT=C:\path\to\SOL
 NEXO_SOL_ENV_PATH=C:\path\to\SOL\.env
 NEXO_LLM_API_KEY=...
 NEXO_WHATSAPP_BRIDGE_URL=http://127.0.0.1:3210
+NEXO_AUTOMATION_TOKEN=...
 ```
 
 The HTTP daemon binds to loopback by default. Do not expose it directly to the internet.
