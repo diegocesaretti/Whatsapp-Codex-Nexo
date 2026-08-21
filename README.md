@@ -22,6 +22,7 @@ multiple WhatsApp INPUT accounts
 - full-history + realtime ingestion for input accounts;
 - local append-only JSONL archive;
 - search across message text, chat, sender and input account label;
+- conversation discovery with recent activity and safe send targets when a PN/group JID is known;
 - exactly one linked-device WhatsApp **output** account;
 - input accounts are structurally read-only;
 - the output account is structurally excluded from the searchable archive;
@@ -92,10 +93,13 @@ NEXO_WHATSAPP_BRIDGE_URL=http://127.0.0.1:3210
 ```text
 whatsapp_status
 list_whatsapp_accounts
+list_whatsapp_chats
 search_whatsapp
 get_recent_whatsapp
 send_whatsapp
 ```
+
+`list_whatsapp_chats` can be filtered by contact/chat name or identifier. When the archive contains both WhatsApp LID and PN identifiers, its `sendTarget` deliberately prefers the phone-number JID (`@s.whatsapp.net`); group JIDs are kept as-is. A missing `sendTarget` means the archive does not yet know a destination safe enough to hand to the output account.
 
 `send_whatsapp` requires `confirmedByUser=true`. Retrieved WhatsApp messages are explicitly treated as untrusted data and cannot authorize an outbound send.
 
@@ -160,11 +164,10 @@ v0.1 uses JSONL deliberately: it is transparent, easy to debug and avoids adding
 
 ## Next likely steps
 
-1. contact/JID normalization across WhatsApp LID/PN identifiers;
-2. better conversation/contact discovery;
-3. reply-to-message support;
-4. media metadata and optional attachment retrieval;
-5. controlled proactive outbound policy, separate from user-confirmed sends;
-6. SQLite FTS when archive size justifies it.
+1. richer contact/profile indexing beyond message-derived chat discovery;
+2. reply-to-message support;
+3. media metadata and optional attachment retrieval;
+4. controlled proactive outbound policy, separate from user-confirmed sends;
+5. SQLite FTS when archive size justifies it.
 
 Baileys is an unofficial WhatsApp integration. Do not use this bridge for spam or bulk messaging.
