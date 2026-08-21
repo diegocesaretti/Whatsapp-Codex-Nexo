@@ -8,6 +8,7 @@ test("admin page renders syntactically valid embedded JavaScript", () => {
   assert.match(html, /Varias cuentas de entrada/);
   assert.match(html, /una sola cuenta de salida/);
   const match = html.match(/<script>([\s\S]*?)<\/script>/i);
-  assert.ok(match?.[1]);
-  assert.doesNotThrow(() => new vm.Script(match[1], { filename: "admin-inline.js" }));
+  const script = match?.[1];
+  assert.ok(script);
+  assert.doesNotThrow(() => new vm.Script(script, { filename: "admin-inline.js" }));
 });
