@@ -233,6 +233,29 @@ export class BridgeStore {
     }
   }
 
+  async getMessage(id: string): Promise<StoredMessage | undefined> {
+    const cleanId = id.trim();
+    if (!cleanId) return undefined;
+    const separator = cleanId.indexOf(":");
+    if (separator <= 0) return undefined;
+    const accountId = cleanId.slice(0, separator);
+    const account = await this.getAccount(accountId);
+    if (!account || account.role !== "input") return undefined;
+    let found: StoredMessage | undefined;
+    await this.scanFile(this.messagePath(accountId), (message) => {
+      if (message.id === cleanId) found = message;
+    });
+    return found;
+  }
+
+  async resolveMessageTarget(id: string): Promise<{ message: StoredMessage; sendTarget: string } | undefined> {
+    const message = await this.getMessage(id);
+    if (!message) return undefined;
+    const sendTarget = chatSendTarget(message);
+    if (!sendTarget) return undefined;
+    return { message, sendTarget };
+  }
+
   async recentMessages(input: { accountIds?: string[]; limit?: number } = {}): Promise<StoredMessage[]> {
     const accounts = (await this.listAccounts()).filter((account) => account.role === "input");
     const selected = input.accountIds?.length
