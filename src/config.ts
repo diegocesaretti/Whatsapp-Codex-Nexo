@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { resolve } from "node:path";
 
 function integerEnv(name: string, fallback: number): number {
@@ -11,6 +12,7 @@ export const config = {
   host: process.env.NEXO_WHATSAPP_HOST?.trim() || "127.0.0.1",
   port: integerEnv("NEXO_WHATSAPP_PORT", 3210),
   dataDir: resolve(process.env.NEXO_WHATSAPP_DATA_DIR?.trim() || ".data"),
+  databaseUrl: process.env.NEXO_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim() || undefined,
   maxSearchResults: Math.max(10, Math.min(200, integerEnv("NEXO_WHATSAPP_MAX_SEARCH_RESULTS", 80))),
 };
 
