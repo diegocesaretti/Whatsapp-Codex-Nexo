@@ -19,6 +19,11 @@ import {
 import type { AccountRecord, OutboundAudit, RuntimeStatus, StoredMessage } from "./types.js";
 
 type Socket = ReturnType<typeof makeWASocket>;
+type ExtendedMessageKey = WAMessage["key"] & {
+  remoteJidAlt?: string | null;
+  participantAlt?: string | null;
+  addressingMode?: string | null;
+};
 
 interface RuntimeSession {
   accountId: string;
@@ -275,10 +280,13 @@ export class WhatsappManager {
       if (account.role !== "input") return;
       runtime.historyMessages += history.messages.length;
       this.enqueue(runtime, async () => {
-        await this.store.updateChatNames(
-          account.id,
-          history.chats.map((chat) => ({ jid: chat.id, name: (chat as { name?: string | null }).name })),
-        );
+        const contacts = (history as unknown as {
+          contacts?: Array<{ id: string; name?: string | null; notify?: string | null }>;
+        }).contacts ?? [];
+        await this.store.updateChatNames(account.id, [
+          ...history.chats.map((chat) => ({ jid: chat.id, name: (chat as { name?: string | null }).name })),
+          ...contacts.map((contact) => ({ jid: contact.id, name: contact.name ?? contact.notify })),
+        ]);
         for (const message of history.messages) {
           await this.ingestMessage(account, runtime, message, "history", socket.user?.id);
         }
@@ -304,21 +312,31 @@ export class WhatsappManager {
     origin: "history" | "realtime",
     ownJid?: string,
   ): Promise<void> {
-    const chatJid = message.key.remoteJid;
-    const sourceMessageId = message.key.id;
+    const key = message.key as ExtendedMessageKey;
+    const chatJid = key.remoteJid;
+    const sourceMessageId = key.id;
     if (!chatJid || !sourceMessageId || shouldIgnoreJid(chatJid)) return;
-    const chatName = await this.store.chatName(account.id, chatJid);
-    const fromMe = Boolean(message.key.fromMe);
-    const senderJid = message.key.participant ?? (fromMe ? ownJid : chatJid) ?? undefined;
+    const chatAltJid = key.remoteJidAlt ?? undefined;
+    const chatName =
+      (await this.store.chatName(account.id, chatJid)) ??
+      (chatAltJid ? await this.store.chatName(account.id, chatAltJid) : undefined);
+    const fromMe = Boolean(key.fromMe);
+    const senderJid = key.participant ?? (fromMe ? ownJid : chatJid) ?? undefined;
+    const senderAltJid =
+      key.participantAlt ??
+      (!fromMe && !key.participant ? key.remoteJidAlt ?? undefined : undefined);
     const stored: StoredMessage = {
       id: `${account.id}:${chatJid}:${sourceMessageId}`,
       accountId: account.id,
       accountLabel: account.label,
       sourceMessageId,
       chatJid,
+      chatAltJid,
       chatName,
       senderJid,
+      senderAltJid,
       senderName: fromMe ? account.displayName ?? runtime.displayName : message.pushName ?? undefined,
+      addressingMode: key.addressingMode ?? undefined,
       fromMe,
       text: extractWhatsappText(message.message),
       messageType: detectWhatsappMessageType(message.message),
