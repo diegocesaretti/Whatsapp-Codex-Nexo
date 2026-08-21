@@ -47,7 +47,7 @@ export class BridgeStore {
   private readonly outboundPath: string;
   private readonly writeChains = new Map<string, Promise<void>>();
   private readonly seenIds = new Map<string, Promise<Set<string>>>();
-  private metadataChain: Promise<void> = Promise.resolve();
+  private metadataChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly dataDir: string) {
     this.accountsPath = join(dataDir, "accounts.json");
@@ -68,21 +68,10 @@ export class BridgeStore {
     return join(this.dataDir, "auth", accountId);
   }
 
-  private async mutateMetadata<T>(task: () => Promise<T>): Promise<T> {
-    let resolveResult!: (value: T | PromiseLike<T>) => void;
-    let rejectResult!: (reason?: unknown) => void;
-    const result = new Promise<T>((resolve, reject) => {
-      resolveResult = resolve;
-      rejectResult = reject;
-    });
-    this.metadataChain = this.metadataChain
-      .catch(() => undefined)
-      .then(async () => {
-        try { resolveResult(await task()); }
-        catch (error) { rejectResult(error); }
-      });
-    await this.metadataChain;
-    return result;
+  private mutateMetadata<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.metadataChain.then(task, task);
+    this.metadataChain = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   async listAccounts(): Promise<AccountRecord[]> {
@@ -257,7 +246,16 @@ export class BridgeStore {
       await this.scanFile(this.messagePath(account.id), (message) => {
         const timestamp = Date.parse(message.occurredAt);
         if (timestamp < afterMs || timestamp > beforeMs) return;
-        const haystack = [message.text, message.chatName, message.chatJid, message.senderName, message.senderJid, account.label]
+        const haystack = [
+          message.text,
+          message.chatName,
+          message.chatJid,
+          message.chatAltJid,
+          message.senderName,
+          message.senderJid,
+          message.senderAltJid,
+          account.label,
+        ]
           .filter(Boolean)
           .join(" ")
           .toLocaleLowerCase("es-AR");
