@@ -35,3 +35,24 @@ test("LLM API key is stored separately and only exposed as configured state", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("output conversation allowlist is normalized and partial updates preserve it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wa-nexo-settings-"));
+  try {
+    const store = new AppSettingsStore(dir);
+    await store.update({
+      outputConversation: {
+        enabled: true,
+        authorizedNumbers: ["+54 9 3532 55-5555", "5493532555555"],
+        maxContextMessages: 120,
+      },
+    });
+    await store.update({ outputConversation: { maxContextMessages: 60 } as never });
+    const value = await store.get();
+    assert.equal(value.outputConversation.enabled, true);
+    assert.deepEqual(value.outputConversation.authorizedNumbers, ["5493532555555"]);
+    assert.equal(value.outputConversation.maxContextMessages, 60);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
