@@ -67,16 +67,50 @@ The tray icon offers **Abrir Nexo**, **Reiniciar Nexo** and **Salir**. The Setti
 
 Without a database URL Nexo remains fully usable with local JSON/JSONL files.
 
-To use PostgreSQL/Neon, set either:
+### Reusing SOL's Neon automatically
+
+When Nexo and SOL are sibling folders, no database secret has to be copied:
+
+```text
+projects/
+├── SOL/
+│   └── .env              # DATABASE_URL lives here
+└── Whatsapp-Codex-Nexo/
+```
+
+If Nexo has no own database variable, it automatically reads `../SOL/.env` and reuses SOL's `DATABASE_URL`. The value is only read at runtime and is never copied into Git or returned by the API/MCP.
+
+For a different folder layout, point Nexo at SOL with either:
+
+```text
+SOL_ROOT=C:\path\to\SOL
+```
+
+or:
+
+```text
+NEXO_SOL_ENV_PATH=C:\path\to\SOL\.env
+```
+
+Explicit Nexo configuration always wins. Resolution order is:
+
+```text
+NEXO_DATABASE_URL
+→ DATABASE_URL
+→ SOL .env
+→ local JSONL fallback
+```
+
+To verify the actual runtime connection and the `whatsapp_nexo` schema:
+
+```powershell
+pnpm db:check
+```
+
+You can still configure a dedicated URL directly with:
 
 ```text
 NEXO_DATABASE_URL=postgresql://...
-```
-
-or the conventional:
-
-```text
-DATABASE_URL=postgresql://...
 ```
 
 Nexo uses only the isolated `whatsapp_nexo` schema. The reproducible schema is in `db/001_neon_schema.sql`.
@@ -158,6 +192,8 @@ send_whatsapp
 
 `configure_whatsapp_llm`, `reply_whatsapp` and `send_whatsapp` are mutation tools and require explicit current-human confirmation in their MCP schema.
 
+`get_whatsapp_nexo_settings` also reports whether storage is local or Neon and which configuration source selected the database, without exposing the connection string.
+
 `list_whatsapp_chats` prefers a phone-number JID (`@s.whatsapp.net`) over LID when both are known. A missing `sendTarget` means Nexo does not know a destination safe enough to hand to OUTPUT.
 
 `reply_whatsapp` is a **contextual response**, not a native quoted-reply bubble: INPUT and OUTPUT are intentionally separate WhatsApp identities.
@@ -186,6 +222,8 @@ NEXO_WHATSAPP_HOST=127.0.0.1
 NEXO_WHATSAPP_PORT=3210
 NEXO_WHATSAPP_DATA_DIR=D:\private\whatsapp-codex-nexo
 NEXO_DATABASE_URL=postgresql://...
+SOL_ROOT=C:\path\to\SOL
+NEXO_SOL_ENV_PATH=C:\path\to\SOL\.env
 NEXO_LLM_API_KEY=...
 NEXO_WHATSAPP_BRIDGE_URL=http://127.0.0.1:3210
 ```
