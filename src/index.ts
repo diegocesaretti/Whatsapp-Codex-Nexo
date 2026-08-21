@@ -1,14 +1,14 @@
 import { config } from "./config.js";
 import { WhatsappSummarizer } from "./llm.js";
+import { NexoBridgeStore } from "./nexo-store.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { createBridgeServer } from "./server.js";
 import { AppSettingsStore } from "./settings.js";
-import { BridgeStore } from "./store.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 
 const settingsStore = new AppSettingsStore(config.dataDir);
 const settings = await settingsStore.get();
-const store = new BridgeStore(config.dataDir, config.databaseUrl);
+const store = new NexoBridgeStore(config.dataDir, config.databaseUrl);
 const conversationStore = new OutputConversationStore(config.dataDir, config.databaseUrl);
 await store.init();
 await conversationStore.init();
@@ -21,7 +21,7 @@ const server = createBridgeServer(store, manager, settingsStore, summarizer, con
 server.listen(config.port, config.host, () => {
   console.log(`WhatsApp Codex Nexo listening on http://${config.host}:${config.port}`);
   console.log(`Storage: ${store.storageMode}${store.storageMode === "neon" ? ` (schema whatsapp_nexo · source ${config.databaseSource})` : " (.data local)"}`);
-  console.log(`LLM summarizer: ${settings.llm.enabled ? `${settings.llm.baseUrl} · ${settings.llm.model}` : "disabled"}`);
+  console.log(`LLM summarizer: ${settings.llm.enabled ? `${settings.llm.baseUrl} · ${settings.llm.model} · ${settings.llm.defaultLookbackDays}d default window` : "disabled"}`);
   console.log(`OUTPUT conversation: ${settings.outputConversation.enabled ? `enabled for ${settings.outputConversation.authorizedNumbers.length} authorized number(s)` : "disabled"}`);
   console.log("Multiple INPUT accounts are read-only; OUTPUT conversation replies are isolated from the searchable INPUT archive.");
 });
