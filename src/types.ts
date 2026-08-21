@@ -69,12 +69,24 @@ export interface WhatsappChatSummary {
   lastSenderName?: string;
 }
 
+export interface OutboundReplyContext {
+  storedMessageId: string;
+  sourceAccountId: string;
+  sourceMessageId: string;
+  chatJid: string;
+  chatAltJid?: string;
+  chatName?: string;
+  senderName?: string;
+  occurredAt: string;
+}
+
 export interface OutboundAudit {
   id: string;
   accountId: string;
   to: string;
   text: string;
   reason?: string;
+  replyTo?: OutboundReplyContext;
   messageId?: string;
   sentAt: string;
 }
