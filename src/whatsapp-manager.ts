@@ -1,0 +1,379 @@
+import makeWASocket, {
+  Browsers,
+  DisconnectReason,
+  makeCacheableSignalKeyStore,
+  useMultiFileAuthState,
+  type WAMessage,
+} from "baileys";
+import pino from "pino";
+import * as QRCode from "qrcode";
+import { randomUUID } from "node:crypto";
+import { BridgeStore } from "./store.js";
+import {
+  detectWhatsappMessageType,
+  extractWhatsappText,
+  normalizeSendTarget,
+  shouldIgnoreJid,
+  whatsappTimestamp,
+} from "./message.js";
+import type { AccountRecord, OutboundAudit, RuntimeStatus, StoredMessage } from "./types.js";
+
+type Socket = ReturnType<typeof makeWASocket>;
+
+interface RuntimeSession {
+  accountId: string;
+  socket?: Socket;
+  state: RuntimeStatus["state"];
+  qrDataUrl?: string;
+  phoneJid?: string;
+  displayName?: string;
+  reconnectAttempt: number;
+  lastError?: string;
+  updatedAt: Date;
+  manualStop: boolean;
+  generation: number;
+  reconnectTimer?: NodeJS.Timeout;
+  queue: Promise<void>;
+  receivedMessages: number;
+  storedMessages: number;
+  historyMessages: number;
+  lastMessageAt?: Date;
+}
+
+const logger = pino({ level: "silent" });
+const NON_RECONNECTABLE = new Set<number>([
+  DisconnectReason.loggedOut,
+  DisconnectReason.badSession,
+  DisconnectReason.connectionReplaced,
+  DisconnectReason.forbidden,
+  DisconnectReason.multideviceMismatch,
+]);
+
+function disconnectStatusCode(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const value = error as { output?: { statusCode?: number }; statusCode?: number };
+  return value.output?.statusCode ?? value.statusCode;
+}
+
+function disconnectMessage(error: unknown): string | undefined {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message?: unknown }).message ?? "");
+  }
+  return undefined;
+}
+
+function publicStatus(runtime: RuntimeSession): RuntimeStatus {
+  return {
+    accountId: runtime.accountId,
+    state: runtime.state,
+    qrDataUrl: runtime.qrDataUrl,
+    phoneJid: runtime.phoneJid,
+    displayName: runtime.displayName,
+    reconnectAttempt: runtime.reconnectAttempt,
+    lastError: runtime.lastError,
+    updatedAt: runtime.updatedAt.toISOString(),
+    receivedMessages: runtime.receivedMessages,
+    storedMessages: runtime.storedMessages,
+    historyMessages: runtime.historyMessages,
+    lastMessageAt: runtime.lastMessageAt?.toISOString(),
+  };
+}
+
+function emptyStatus(accountId: string): RuntimeStatus {
+  return {
+    accountId,
+    state: "idle",
+    reconnectAttempt: 0,
+    updatedAt: new Date().toISOString(),
+    receivedMessages: 0,
+    storedMessages: 0,
+    historyMessages: 0,
+  };
+}
+
+export class WhatsappManager {
+  private readonly sessions = new Map<string, RuntimeSession>();
+
+  constructor(private readonly store: BridgeStore) {}
+
+  getStatus(accountId: string): RuntimeStatus {
+    const runtime = this.sessions.get(accountId);
+    return runtime ? publicStatus(runtime) : emptyStatus(accountId);
+  }
+
+  async startLinkedAccounts(): Promise<void> {
+    const accounts = await this.store.listAccounts();
+    await Promise.all(
+      accounts
+        .filter((account) => account.enabled && account.linkedAt)
+        .map((account) => this.start(account.id).catch((error) => {
+          console.error(`[whatsapp:${account.id}] autostart failed`, error);
+        })),
+    );
+  }
+
+  async start(accountId: string): Promise<RuntimeStatus> {
+    const account = await this.store.getAccount(accountId);
+    if (!account) throw new Error("WhatsApp account not found");
+    if (!account.enabled) throw new Error("WhatsApp account is disabled");
+
+    let runtime = this.sessions.get(accountId);
+    if (!runtime) {
+      runtime = {
+        accountId,
+        state: "idle",
+        reconnectAttempt: 0,
+        updatedAt: new Date(),
+        manualStop: false,
+        generation: 0,
+        queue: Promise.resolve(),
+        receivedMessages: 0,
+        storedMessages: 0,
+        historyMessages: 0,
+      };
+      this.sessions.set(accountId, runtime);
+    }
+    runtime.manualStop = false;
+    if (runtime.socket && ["connecting", "qr", "open", "reconnecting"].includes(runtime.state)) {
+      return publicStatus(runtime);
+    }
+    await this.connect(account, runtime);
+    return publicStatus(runtime);
+  }
+
+  async restart(accountId: string): Promise<RuntimeStatus> {
+    const runtime = this.sessions.get(accountId);
+    if (runtime) await this.stopRuntime(runtime, false);
+    return this.start(accountId);
+  }
+
+  async logout(accountId: string): Promise<void> {
+    const runtime = this.sessions.get(accountId);
+    if (runtime) {
+      runtime.manualStop = true;
+      if (runtime.reconnectTimer) clearTimeout(runtime.reconnectTimer);
+      try { await runtime.socket?.logout("Codex Nexo unlink"); } catch {}
+      try { runtime.socket?.end(undefined); } catch {}
+      await runtime.queue.catch(() => undefined);
+      this.sessions.delete(accountId);
+    }
+    await this.store.deleteAccount(accountId);
+  }
+
+  async stopAll(): Promise<void> {
+    await Promise.all([...this.sessions.values()].map((runtime) => this.stopRuntime(runtime, true)));
+    this.sessions.clear();
+  }
+
+  async sendText(input: { to: string; text: string; reason?: string }): Promise<OutboundAudit> {
+    const output = await this.store.getOutputAccount();
+    if (!output) throw new Error("No WhatsApp output account is configured");
+    const message = input.text.trim();
+    if (!message) throw new Error("Message text is required");
+    if (message.length > 12_000) throw new Error("Message text is too long");
+    await this.start(output.id);
+    const runtime = this.sessions.get(output.id);
+    if (!runtime?.socket || runtime.state !== "open") {
+      throw new Error("WhatsApp output account is not connected");
+    }
+    const to = normalizeSendTarget(input.to);
+    const result = await runtime.socket.sendMessage(to, { text: message });
+    const audit: OutboundAudit = {
+      id: randomUUID(),
+      accountId: output.id,
+      to,
+      text: message,
+      reason: input.reason?.trim().slice(0, 500) || undefined,
+      messageId: result?.key.id ?? undefined,
+      sentAt: new Date().toISOString(),
+    };
+    await this.store.appendOutbound(audit);
+    return audit;
+  }
+
+  private async connect(account: AccountRecord, runtime: RuntimeSession): Promise<void> {
+    runtime.generation += 1;
+    const generation = runtime.generation;
+    runtime.state = runtime.reconnectAttempt ? "reconnecting" : "connecting";
+    runtime.qrDataUrl = undefined;
+    runtime.lastError = undefined;
+    runtime.updatedAt = new Date();
+
+    const { state, saveCreds } = await useMultiFileAuthState(this.store.authDir(account.id));
+    const socket = makeWASocket({
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger),
+      },
+      logger,
+      browser: Browsers.windows(account.role === "output" ? "Codex WhatsApp Output" : `Codex Input · ${account.label}`),
+      printQRInTerminal: false,
+      markOnlineOnConnect: false,
+      syncFullHistory: account.role === "input",
+      shouldSyncHistoryMessage: () => account.role === "input",
+      shouldIgnoreJid,
+      emitOwnEvents: true,
+    });
+    runtime.socket = socket;
+
+    socket.ev.on("creds.update", () => {
+      void saveCreds().catch((error) => {
+        runtime.lastError = `Failed to persist WhatsApp credentials: ${error instanceof Error ? error.message : String(error)}`;
+        runtime.updatedAt = new Date();
+      });
+    });
+
+    socket.ev.on("connection.update", (update) => {
+      if (runtime.generation !== generation) return;
+      if (update.qr) {
+        void QRCode.toDataURL(update.qr, { width: 320, margin: 1, errorCorrectionLevel: "M" })
+          .then((dataUrl) => {
+            if (runtime.generation !== generation) return;
+            runtime.qrDataUrl = dataUrl;
+            runtime.state = "qr";
+            runtime.updatedAt = new Date();
+          })
+          .catch((error) => {
+            runtime.lastError = `QR generation failed: ${String(error)}`;
+            runtime.updatedAt = new Date();
+          });
+      }
+      if (update.connection === "open") {
+        runtime.state = "open";
+        runtime.qrDataUrl = undefined;
+        runtime.reconnectAttempt = 0;
+        runtime.lastError = undefined;
+        runtime.phoneJid = socket.user?.id;
+        runtime.displayName = socket.user?.name ?? undefined;
+        runtime.updatedAt = new Date();
+        void this.store.updateAccount(account.id, {
+          linkedAt: account.linkedAt ?? new Date().toISOString(),
+          phoneJid: socket.user?.id,
+          displayName: socket.user?.name ?? undefined,
+          lastError: undefined,
+        }).catch((error) => console.error(`[whatsapp:${account.id}] account state update failed`, error));
+      }
+      if (update.connection === "close") {
+        void this.handleClose(account, runtime, generation, update.lastDisconnect?.error);
+      }
+    });
+
+    socket.ev.on("messages.upsert", (upsert) => {
+      if (account.role !== "input") return;
+      runtime.receivedMessages += upsert.messages.length;
+      runtime.lastMessageAt = new Date();
+      const origin = upsert.type === "notify" ? "realtime" : "history";
+      this.enqueue(runtime, async () => {
+        for (const message of upsert.messages) {
+          await this.ingestMessage(account, runtime, message, origin, socket.user?.id);
+        }
+      });
+    });
+
+    socket.ev.on("messaging-history.set", (history) => {
+      if (account.role !== "input") return;
+      runtime.historyMessages += history.messages.length;
+      this.enqueue(runtime, async () => {
+        await this.store.updateChatNames(
+          account.id,
+          history.chats.map((chat) => ({ jid: chat.id, name: (chat as { name?: string | null }).name })),
+        );
+        for (const message of history.messages) {
+          await this.ingestMessage(account, runtime, message, "history", socket.user?.id);
+        }
+      });
+    });
+  }
+
+  private enqueue(runtime: RuntimeSession, task: () => Promise<void>): void {
+    runtime.queue = runtime.queue
+      .catch(() => undefined)
+      .then(task)
+      .catch((error) => {
+        runtime.lastError = error instanceof Error ? error.message : String(error);
+        runtime.updatedAt = new Date();
+        console.error(`[whatsapp:${runtime.accountId}] queue task failed`, error);
+      });
+  }
+
+  private async ingestMessage(
+    account: AccountRecord,
+    runtime: RuntimeSession,
+    message: WAMessage,
+    origin: "history" | "realtime",
+    ownJid?: string,
+  ): Promise<void> {
+    const chatJid = message.key.remoteJid;
+    const sourceMessageId = message.key.id;
+    if (!chatJid || !sourceMessageId || shouldIgnoreJid(chatJid)) return;
+    const chatName = await this.store.chatName(account.id, chatJid);
+    const fromMe = Boolean(message.key.fromMe);
+    const senderJid = message.key.participant ?? (fromMe ? ownJid : chatJid) ?? undefined;
+    const stored: StoredMessage = {
+      id: `${account.id}:${chatJid}:${sourceMessageId}`,
+      accountId: account.id,
+      accountLabel: account.label,
+      sourceMessageId,
+      chatJid,
+      chatName,
+      senderJid,
+      senderName: fromMe ? account.displayName ?? runtime.displayName : message.pushName ?? undefined,
+      fromMe,
+      text: extractWhatsappText(message.message),
+      messageType: detectWhatsappMessageType(message.message),
+      occurredAt: whatsappTimestamp(message.messageTimestamp).toISOString(),
+      origin,
+    };
+    if (await this.store.appendMessage(stored)) {
+      runtime.storedMessages += 1;
+      runtime.updatedAt = new Date();
+    }
+  }
+
+  private async handleClose(
+    account: AccountRecord,
+    runtime: RuntimeSession,
+    generation: number,
+    error: unknown,
+  ): Promise<void> {
+    if (runtime.generation !== generation || runtime.manualStop) return;
+    const statusCode = disconnectStatusCode(error);
+    const message = disconnectMessage(error);
+    runtime.socket = undefined;
+    runtime.qrDataUrl = undefined;
+    runtime.updatedAt = new Date();
+
+    if (statusCode !== undefined && NON_RECONNECTABLE.has(statusCode)) {
+      runtime.state = statusCode === DisconnectReason.loggedOut ? "logged_out" : "error";
+      runtime.lastError = message || `WhatsApp disconnected with status ${statusCode}`;
+      await this.store.updateAccount(account.id, { lastError: runtime.lastError }).catch(() => undefined);
+      return;
+    }
+
+    runtime.reconnectAttempt += 1;
+    runtime.state = "reconnecting";
+    runtime.lastError = message;
+    const delay = Math.min(30_000, 1_000 * 2 ** Math.min(runtime.reconnectAttempt, 5));
+    runtime.reconnectTimer = setTimeout(() => {
+      runtime.reconnectTimer = undefined;
+      void this.start(account.id).catch((reconnectError) => {
+        runtime.state = "error";
+        runtime.lastError = reconnectError instanceof Error ? reconnectError.message : String(reconnectError);
+        runtime.updatedAt = new Date();
+      });
+    }, delay);
+    runtime.reconnectTimer.unref();
+  }
+
+  private async stopRuntime(runtime: RuntimeSession, manualStop: boolean): Promise<void> {
+    runtime.manualStop = manualStop;
+    if (runtime.reconnectTimer) clearTimeout(runtime.reconnectTimer);
+    runtime.reconnectTimer = undefined;
+    try { runtime.socket?.end(undefined); } catch {}
+    runtime.socket = undefined;
+    await runtime.queue.catch(() => undefined);
+    runtime.state = "idle";
+    runtime.updatedAt = new Date();
+  }
+}
