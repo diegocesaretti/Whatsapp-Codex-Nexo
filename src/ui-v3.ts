@@ -28,12 +28,18 @@ async function api(path, options) {
   return { response, body };
 }
 
+function displayAccountJid(jid) {
+  const text = String(jid || '');
+  const match = text.match(/^(\d+)(?::\d+)?@s\.whatsapp\.net$/);
+  return match ? '+' + match[1] : text;
+}
+
 function accountCard(account) {
   const runtime = account.runtime || {state:'idle'};
   const role = account.role === 'output' ? 'OUTPUT · Codex' : 'INPUT · observado';
   let html = '<article class="card">';
   html += '<div class="row"><div><strong>' + esc(account.label) + '</strong><div class="small muted" style="margin-top:4px">' + role;
-  if (account.phoneJid) html += ' · ' + esc(account.phoneJid);
+  if (account.phoneJid) html += ' · ' + esc(displayAccountJid(account.phoneJid));
   html += '</div></div><span class="badge"><span class="dot ' + esc(runtime.state) + '"></span>' + esc(runtime.state) + '</span></div>';
   if (runtime.lastError) html += '<div class="error small" style="margin-top:10px">' + esc(runtime.lastError) + '</div>';
   if (runtime.qrDataUrl) html += '<div class="qr"><img src="' + esc(runtime.qrDataUrl) + '" alt="QR WhatsApp"><div style="color:#111;text-align:center;font-weight:700;margin-top:6px">WhatsApp → Dispositivos vinculados</div></div>';
@@ -56,8 +62,8 @@ function settingsCard(settingsResponse) {
   html += '<hr><div class="row"><div><strong>Conversación bidireccional con Codex</strong><div class="small muted">Sólo chats directos de números autorizados. INPUT sigue siendo no confiable.</div></div><label class="check"><input id="convEnabled" type="checkbox" ' + (conversation.enabled ? 'checked' : '') + '> habilitada</label></div>';
   html += '<div class="fields" style="margin-top:12px"><div class="field"><label>Números autorizados · uno por línea</label><textarea id="convNumbers" placeholder="5493532...">' + esc(numbersText) + '</textarea></div><div><div class="field"><label>Máx. mensajes de contexto</label><input id="convMax" type="number" min="10" max="500" value="' + Number(conversation.maxContextMessages || 80) + '"></div><div class="small muted" style="margin-top:8px">Usá código de país. Nexo normaliza +, espacios y guiones. Revocar un número bloquea respuestas inmediatamente.</div><button id="checkReplies" style="margin-top:12px">Ver respuestas pendientes</button></div></div><div id="convst" class="status small"></div>';
 
-  html += '<hr><div class="row"><div><strong>LLM para barrido y resumen</strong><div class="small muted">OpenAI-compatible · analiza INPUT como datos no confiables.</div></div><label class="check"><input id="llmEnabled" type="checkbox" ' + (llm.enabled ? 'checked' : '') + '> habilitado</label></div>';
-  html += '<div class="fields" style="margin-top:12px"><div class="field"><label>Base URL</label><input id="llmUrl" value="' + esc(llm.baseUrl) + '"></div><div class="field"><label>Modelo</label><input id="llmModel" value="' + esc(llm.model) + '"></div><div class="field"><label>Temperatura</label><input id="llmTemp" type="number" step="0.1" min="0" max="2" value="' + Number(llm.temperature) + '"></div><div class="field"><label>Máx. mensajes por barrido</label><input id="llmMax" type="number" min="20" max="5000" value="' + Number(llm.maxInputMessages) + '"></div><div class="field"><label>API key</label><input id="llmKey" type="password" placeholder="' + (settingsResponse.llmApiKeyConfigured ? 'Configurada · dejar vacío para conservar' : 'Opcional para endpoints locales') + '"></div><div class="field"><label>Estado secreto</label><input disabled value="' + (settingsResponse.llmApiKeyConfigured ? 'API key configurada' : 'Sin API key') + '"></div></div>';
+  html += '<hr><div class="row"><div><strong>LLM para barrido y resumen</strong><div class="small muted">OpenAI-compatible · analiza INPUT como datos no confiables. Si no indicás fechas, usa sólo la ventana reciente configurada.</div></div><label class="check"><input id="llmEnabled" type="checkbox" ' + (llm.enabled ? 'checked' : '') + '> habilitado</label></div>';
+  html += '<div class="fields" style="margin-top:12px"><div class="field"><label>Base URL</label><input id="llmUrl" value="' + esc(llm.baseUrl) + '"></div><div class="field"><label>Modelo</label><input id="llmModel" value="' + esc(llm.model) + '"></div><div class="field"><label>Temperatura</label><input id="llmTemp" type="number" step="0.1" min="0" max="2" value="' + Number(llm.temperature) + '"></div><div class="field"><label>Máx. mensajes por barrido</label><input id="llmMax" type="number" min="20" max="5000" value="' + Number(llm.maxInputMessages) + '"></div><div class="field"><label>Ventana reciente por defecto (días)</label><input id="llmLookback" type="number" min="1" max="90" value="' + Number(llm.defaultLookbackDays || 3) + '"></div><div class="field"><label>API key</label><input id="llmKey" type="password" placeholder="' + (settingsResponse.llmApiKeyConfigured ? 'Configurada · dejar vacío para conservar' : 'Opcional para endpoints locales') + '"></div><div class="field"><label>Estado secreto</label><input disabled value="' + (settingsResponse.llmApiKeyConfigured ? 'API key configurada' : 'Sin API key') + '"></div></div>';
   html += '<div class="field" style="margin-top:10px"><label>System prompt</label><textarea id="llmPrompt">' + esc(llm.systemPrompt) + '</textarea></div><div class="cluster" style="margin-top:12px"><button id="saveCfg" class="primary">Guardar configuración</button><button id="testLlm">Probar resumen</button></div><div id="cfgst" class="status small"></div></section>';
   return html;
 }
@@ -160,6 +166,7 @@ function bind() {
         model: document.getElementById('llmModel').value,
         temperature: Number(document.getElementById('llmTemp').value),
         maxInputMessages: Number(document.getElementById('llmMax').value),
+        defaultLookbackDays: Number(document.getElementById('llmLookback').value),
         systemPrompt: document.getElementById('llmPrompt').value
       }
     };
@@ -179,10 +186,13 @@ function bind() {
 
   document.getElementById('testLlm').onclick = async () => {
     const status = document.getElementById('cfgst');
-    status.textContent = 'Resumiendo últimos mensajes…';
-    const result = await api('/api/llm/summarize', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({limit:80,focus:'Prueba de configuración: resumen breve de actividad reciente'})});
+    status.textContent = 'Resumiendo ventana reciente…';
+    const result = await api('/api/llm/summarize', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({limit:80,focus:'Prueba de configuración: resumen breve de actividad reciente y sólo pendientes vigentes'})});
     status.className = 'status small ' + (result.response.ok ? 'good' : 'error');
-    status.textContent = result.response.ok ? result.body.summary : (result.body.error || 'Error');
+    if (result.response.ok) {
+      const since = result.body.effectiveAfter ? new Date(result.body.effectiveAfter).toLocaleString() : '';
+      status.textContent = (since ? 'Desde ' + since + ' · ' : '') + result.body.summary;
+    } else status.textContent = result.body.error || 'Error';
   };
 }
 
