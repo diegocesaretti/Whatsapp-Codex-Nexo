@@ -8,8 +8,8 @@ import type { OutputConversationMessage } from "./types.js";
 
 test("stores, lists and acknowledges authorized output replies locally", async () => {
   const dir = await mkdtemp(join(tmpdir(), "wa-nexo-output-conversation-"));
+  const store = new OutputConversationStore(dir);
   try {
-    const store = new OutputConversationStore(dir);
     await store.init();
     const inbound: OutputConversationMessage = {
       id: "acc:in-1:inbound",
