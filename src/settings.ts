@@ -14,6 +14,7 @@ export interface LlmSettings {
   model: string;
   temperature: number;
   maxInputMessages: number;
+  defaultLookbackDays: number;
   systemPrompt: string;
 }
 
@@ -60,6 +61,7 @@ const defaults: AppSettings = {
     model: "gpt-4.1-mini",
     temperature: 0.2,
     maxInputMessages: 500,
+    defaultLookbackDays: 3,
     systemPrompt: defaultLlmPrompt,
   },
   outputConversation: {
@@ -165,6 +167,7 @@ export class AppSettingsStore {
         model: llm.model?.trim().slice(0, 200) || defaults.llm.model,
         temperature: clampFloat(llm.temperature, 0, 2, defaults.llm.temperature),
         maxInputMessages: clampInt(llm.maxInputMessages, 20, 5000, defaults.llm.maxInputMessages),
+        defaultLookbackDays: clampInt(llm.defaultLookbackDays, 1, 90, defaults.llm.defaultLookbackDays),
         systemPrompt: llm.systemPrompt?.trim().slice(0, 8000) || defaults.llm.systemPrompt,
       },
       outputConversation: {
