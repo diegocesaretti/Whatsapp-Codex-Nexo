@@ -22,6 +22,12 @@ export interface AppSettings {
   uiRefreshMs: number;
   maxSearchResults: number;
   llm: LlmSettings;
+  morningBrief: {
+    enabled: boolean;
+    destination: string;
+    maxCharacters: number;
+    timezone: string;
+  };
 }
 
 const defaultLlmPrompt =
@@ -32,6 +38,7 @@ const defaults: AppSettings = {
   openDashboardOnLaunch: true,
   uiRefreshMs: 1500,
   maxSearchResults: 80,
+  morningBrief: { enabled: false, destination: "", maxCharacters: 2000, timezone: "America/Argentina/Buenos_Aires" },
   llm: {
     enabled: false,
     baseUrl: "https://api.openai.com/v1",
@@ -81,10 +88,12 @@ export class AppSettingsStore {
     const current = await this.get();
     const top = defined(patch);
     const llmPatch = patch.llm ? defined(patch.llm) : {};
+    const morningPatch = patch.morningBrief ? defined(patch.morningBrief) : {};
     const next = this.normalize({
       ...current,
       ...top,
       llm: { ...current.llm, ...llmPatch },
+      morningBrief: { ...current.morningBrief, ...morningPatch },
     });
     await mkdir(dirname(this.path), { recursive: true });
     await writeFile(this.path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
@@ -115,11 +124,18 @@ export class AppSettingsStore {
 
   private normalize(value: Partial<AppSettings>): AppSettings {
     const llm = value.llm ?? defaults.llm;
+    const morning = value.morningBrief ?? defaults.morningBrief;
     return {
       autoConnectLinkedAccounts: value.autoConnectLinkedAccounts ?? defaults.autoConnectLinkedAccounts,
       openDashboardOnLaunch: value.openDashboardOnLaunch ?? defaults.openDashboardOnLaunch,
       uiRefreshMs: clampInt(value.uiRefreshMs, 500, 10_000, defaults.uiRefreshMs),
       maxSearchResults: clampInt(value.maxSearchResults, 10, 200, defaults.maxSearchResults),
+      morningBrief: {
+        enabled: morning.enabled ?? defaults.morningBrief.enabled,
+        destination: morning.destination?.trim().slice(0, 180) || "",
+        maxCharacters: clampInt(morning.maxCharacters, 500, 5000, defaults.morningBrief.maxCharacters),
+        timezone: morning.timezone?.trim().slice(0, 100) || defaults.morningBrief.timezone,
+      },
       llm: {
         enabled: llm.enabled ?? defaults.llm.enabled,
         baseUrl: (llm.baseUrl?.trim() || defaults.llm.baseUrl).replace(/\/$/, ""),
