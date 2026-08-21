@@ -92,6 +92,15 @@ export function createBridgeServer(store: BridgeStore, manager: WhatsappManager)
         return;
       }
 
+      if (request.method === "GET" && path === "/api/chats") {
+        const accountIds = url.searchParams.getAll("accountId");
+        const query = url.searchParams.get("q")?.trim() || undefined;
+        const limit = Number(url.searchParams.get("limit") || 50);
+        json(response, 200, {
+          chats: await store.listChats({ query, accountIds, limit }),
+        });
+        return;
+      }
       if (request.method === "GET" && path === "/api/messages/recent") {
         const accountIds = url.searchParams.getAll("accountId");
         const limit = Number(url.searchParams.get("limit") || 40);
