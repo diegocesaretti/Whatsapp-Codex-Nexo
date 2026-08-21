@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-codex-nexo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Multi-input WhatsApp bridge with a single Codex-controlled output account",
@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
+    "tray": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/nexo-tray.ps1",
     "mcp": "tsx src/mcp.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test src/**/*.test.ts"
@@ -18,12 +19,15 @@
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
     "baileys": "7.0.0-rc13",
+    "dotenv": "^17.2.2",
+    "pg": "^8.16.3",
     "pino": "^9.6.0",
     "qrcode": "1.5.4",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.5",
     "@types/qrcode": "^1.5.5",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
