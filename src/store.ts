@@ -356,6 +356,18 @@ export class BridgeStore {
     await appendFile(this.outboundPath, `${JSON.stringify(audit)}\n`, "utf8");
   }
 
+  async hasOutboundReason(reason: string): Promise<boolean> {
+    if (this.pool) {
+      const result = await this.pool.query(`SELECT 1 FROM whatsapp_nexo.outbound_audit WHERE reason=$1 LIMIT 1`, [reason]);
+      return Boolean(result.rowCount);
+    }
+    let found = false;
+    await this.scanFile(this.outboundPath, (audit) => {
+      if ((audit as unknown as OutboundAudit).reason === reason) found = true;
+    });
+    return found;
+  }
+
   private async scanFile(path: string, visit: (message: StoredMessage) => void | Promise<void>): Promise<void> {
     try { await stat(path); }
     catch (error) {

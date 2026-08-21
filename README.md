@@ -200,6 +200,12 @@ send_whatsapp
 
 Retrieved WhatsApp messages and LLM summaries can never authorize outbound traffic. Only the current human request may do that.
 
+### Morning Brief proactive grant
+
+The bridge has one deliberately narrow exception to interactive confirmation: `POST /api/automation/morning-brief/send`. It requires a local bearer token from `NEXO_AUTOMATION_TOKEN`, an enabled `morningBrief` policy, a fixed user-configured destination, the literal automation id `morning_brief`, a local date, and the configured length limit. The destination is never accepted in the request. The outbound audit reason `automation:morning_brief:YYYY-MM-DD` enforces at most one delivery per day across restarts.
+
+Configure the policy through the local settings API/UI; never commit the token or destination. Interactive `send_whatsapp` and `reply_whatsapp` continue to require `confirmedByUser=true` and cannot use this grant.
+
 ## Settings
 
 The admin UI exposes:
