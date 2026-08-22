@@ -29,7 +29,7 @@ async function bridge<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 serveStdio(() => {
-  const server = new McpServer({ name: "whatsapp-codex-nexo", version: "0.3.0" });
+  const server = new McpServer({ name: "whatsapp-codex-nexo", version: "0.4.0" });
 
   server.registerTool("whatsapp_status", {
     description: "Show Nexo status, WhatsApp input/output accounts, storage backend and runtime state.",
@@ -37,9 +37,30 @@ serveStdio(() => {
   }, async () => text(await bridge("/api/state")));
 
   server.registerTool("get_whatsapp_nexo_settings", {
-    description: "Return Nexo configuration including storage mode, Windows autostart, optional LLM settings and the OUTPUT conversation allowlist. API keys are never returned.",
+    description: "Return Nexo configuration including storage mode, Windows autostart, optional LLM settings, OUTPUT conversation allowlist and resident Codex worker settings. API keys are never returned.",
     inputSchema: z.object({}),
   }, async () => text(await bridge("/api/settings")));
+
+  server.registerTool("get_codex_whatsapp_worker_status", {
+    description: "Return the resident Codex WhatsApp worker status, including whether it is running, its last error/success and persisted conversation-session count.",
+    inputSchema: z.object({}),
+  }, async () => text(await bridge("/api/codex-worker/status")));
+
+  server.registerTool("configure_codex_whatsapp_worker", {
+    description: "Configure the resident worker that invokes the locally authenticated Codex CLI for authorized OUTPUT WhatsApp messages. This is a local settings mutation and requires explicit current-human confirmation.",
+    inputSchema: z.object({
+      confirmedByUser: z.literal(true),
+      enabled: z.boolean().optional(),
+      pollIntervalMs: z.number().int().min(500).max(10_000).optional(),
+      debounceMs: z.number().int().min(0).max(15_000).optional(),
+      timeoutSeconds: z.number().int().min(30).max(900).optional(),
+      maxBatchMessages: z.number().int().min(1).max(20).optional(),
+      workingDirectory: z.string().max(1000).optional().describe("Optional local working directory for Codex. Empty uses the Nexo process working directory."),
+    }),
+  }, async ({ enabled, pollIntervalMs, debounceMs, timeoutSeconds, maxBatchMessages, workingDirectory }) => text(await bridge("/api/settings", {
+    method: "PUT",
+    body: JSON.stringify({ codexWorker: { enabled, pollIntervalMs, debounceMs, timeoutSeconds, maxBatchMessages, workingDirectory } }),
+  })));
 
   server.registerTool("configure_whatsapp_llm", {
     description: "Configure the optional OpenAI-compatible LLM used only to sweep and summarize WhatsApp data for Codex. Summaries use a recent lookback window by default unless the caller explicitly supplies dates. This does not authorize or send WhatsApp messages. Mutate configuration only when the current human explicitly asked for it.",

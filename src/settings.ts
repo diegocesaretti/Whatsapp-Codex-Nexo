@@ -24,6 +24,15 @@ export interface OutputConversationSettings {
   maxContextMessages: number;
 }
 
+export interface CodexWorkerSettings {
+  enabled: boolean;
+  pollIntervalMs: number;
+  debounceMs: number;
+  timeoutSeconds: number;
+  maxBatchMessages: number;
+  workingDirectory: string;
+}
+
 export interface MorningBriefSettings {
   enabled: boolean;
   destination: string;
@@ -38,6 +47,7 @@ export interface AppSettings {
   maxSearchResults: number;
   llm: LlmSettings;
   outputConversation: OutputConversationSettings;
+  codexWorker: CodexWorkerSettings;
   morningBrief: MorningBriefSettings;
 }
 
@@ -68,6 +78,14 @@ const defaults: AppSettings = {
     enabled: false,
     authorizedNumbers: [],
     maxContextMessages: 80,
+  },
+  codexWorker: {
+    enabled: true,
+    pollIntervalMs: 1500,
+    debounceMs: 1800,
+    timeoutSeconds: 180,
+    maxBatchMessages: 8,
+    workingDirectory: "",
   },
 };
 
@@ -111,12 +129,14 @@ export class AppSettingsStore {
     const top = defined(patch);
     const llmPatch = patch.llm ? defined(patch.llm) : {};
     const conversationPatch = patch.outputConversation ? defined(patch.outputConversation) : {};
+    const workerPatch = patch.codexWorker ? defined(patch.codexWorker) : {};
     const morningPatch = patch.morningBrief ? defined(patch.morningBrief) : {};
     const next = this.normalize({
       ...current,
       ...top,
       llm: { ...current.llm, ...llmPatch },
       outputConversation: { ...current.outputConversation, ...conversationPatch },
+      codexWorker: { ...current.codexWorker, ...workerPatch },
       morningBrief: { ...current.morningBrief, ...morningPatch },
     });
     await mkdir(dirname(this.path), { recursive: true });
@@ -149,6 +169,7 @@ export class AppSettingsStore {
   private normalize(value: Partial<AppSettings>): AppSettings {
     const llm = value.llm ?? defaults.llm;
     const outputConversation = value.outputConversation ?? defaults.outputConversation;
+    const codexWorker = value.codexWorker ?? defaults.codexWorker;
     const morning = value.morningBrief ?? defaults.morningBrief;
     return {
       autoConnectLinkedAccounts: value.autoConnectLinkedAccounts ?? defaults.autoConnectLinkedAccounts,
@@ -174,6 +195,14 @@ export class AppSettingsStore {
         enabled: outputConversation.enabled ?? defaults.outputConversation.enabled,
         authorizedNumbers: normalizeAuthorizedNumbers(outputConversation.authorizedNumbers),
         maxContextMessages: clampInt(outputConversation.maxContextMessages, 10, 500, defaults.outputConversation.maxContextMessages),
+      },
+      codexWorker: {
+        enabled: codexWorker.enabled ?? defaults.codexWorker.enabled,
+        pollIntervalMs: clampInt(codexWorker.pollIntervalMs, 500, 10_000, defaults.codexWorker.pollIntervalMs),
+        debounceMs: clampInt(codexWorker.debounceMs, 0, 15_000, defaults.codexWorker.debounceMs),
+        timeoutSeconds: clampInt(codexWorker.timeoutSeconds, 30, 900, defaults.codexWorker.timeoutSeconds),
+        maxBatchMessages: clampInt(codexWorker.maxBatchMessages, 1, 20, defaults.codexWorker.maxBatchMessages),
+        workingDirectory: codexWorker.workingDirectory?.trim().slice(0, 1000) || "",
       },
     };
   }

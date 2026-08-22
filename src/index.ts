@@ -1,3 +1,4 @@
+import { CodexConversationWorker } from "./codex-conversation-worker.js";
 import { config } from "./config.js";
 import { WhatsappSummarizer } from "./llm.js";
 import { NexoBridgeStore } from "./nexo-store.js";
@@ -17,21 +18,25 @@ const manager = new WhatsappManager(store, settingsStore, conversationStore);
 if (settings.autoConnectLinkedAccounts) await manager.startLinkedAccounts();
 
 const summarizer = new WhatsappSummarizer(store, settingsStore);
-const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore);
+const codexWorker = new CodexConversationWorker(config.dataDir, settingsStore, conversationStore, manager);
+const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore, codexWorker);
 server.listen(config.port, config.host, () => {
   console.log(`WhatsApp Codex Nexo listening on http://${config.host}:${config.port}`);
   console.log(`Storage: ${store.storageMode}${store.storageMode === "neon" ? ` (schema whatsapp_nexo · source ${config.databaseSource})` : " (.data local)"}`);
   console.log(`LLM summarizer: ${settings.llm.enabled ? `${settings.llm.baseUrl} · ${settings.llm.model} · ${settings.llm.defaultLookbackDays}d default window` : "disabled"}`);
   console.log(`OUTPUT conversation: ${settings.outputConversation.enabled ? `enabled for ${settings.outputConversation.authorizedNumbers.length} authorized number(s)` : "disabled"}`);
+  console.log(`Codex resident worker: ${settings.codexWorker.enabled ? "enabled" : "disabled"}`);
   console.log("Multiple INPUT accounts are read-only; OUTPUT conversation replies are isolated from the searchable INPUT archive.");
+  void codexWorker.start().catch((error) => console.error("Failed to start Codex worker", error));
 });
 
 let stopping = false;
 async function shutdown(signal: string): Promise<void> {
   if (stopping) return;
   stopping = true;
-  console.log(`\n${signal}: stopping WhatsApp sessions...`);
+  console.log(`\n${signal}: stopping Nexo...`);
   server.close();
+  await codexWorker.stop().catch((error) => console.error("Failed to stop Codex worker", error));
   await manager.stopAll().catch((error) => console.error("Failed to stop WhatsApp sessions", error));
   await Promise.all([
     store.close().catch((error) => console.error("Failed to close storage", error)),
