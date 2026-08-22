@@ -200,11 +200,12 @@ export class CodexConversationWorker {
       }
 
       for (const [peerPhone, messages] of byPeer) {
-        const newest = messages[messages.length - 1]!;
-        if (Date.now() - Date.parse(newest.occurredAt) < settings.codexWorker.debounceMs) continue;
-        const retry = this.failures.get(newest.id);
+        const newestPending = messages[messages.length - 1]!;
+        if (Date.now() - Date.parse(newestPending.occurredAt) < settings.codexWorker.debounceMs) continue;
+        const batch = messages.slice(0, settings.codexWorker.maxBatchMessages);
+        const batchNewest = batch[batch.length - 1]!;
+        const retry = this.failures.get(batchNewest.id);
         if (retry && Date.now() < retry.nextAt) continue;
-        const batch = messages.slice(-settings.codexWorker.maxBatchMessages);
         await this.processPeer(peerPhone, batch, settings.codexWorker.timeoutSeconds, settings.codexWorker.workingDirectory);
         break;
       }
@@ -222,7 +223,9 @@ export class CodexConversationWorker {
     const newest = inbound[inbound.length - 1]!;
     this.currentPeer = peerPhone;
     try {
-      const context = await this.conversationStore.list({ peer: peerPhone, limit: 30 });
+      const inboundIds = new Set(inbound.map((message) => message.id));
+      const context = (await this.conversationStore.list({ peer: peerPhone, limit: 30 }))
+        .filter((message) => !inboundIds.has(message.id));
       const prompt = buildCodexWhatsappPrompt(peerPhone, inbound, context);
       const existingThread = await this.state.getThreadId(peerPhone);
       const result = await executeCodex(prompt, existingThread, {
