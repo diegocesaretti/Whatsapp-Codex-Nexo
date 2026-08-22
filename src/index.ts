@@ -1,6 +1,8 @@
+import { AttachmentInbox } from "./attachment-inbox.js";
 import { CodexConversationWorker } from "./codex-conversation-worker.js";
 import { config } from "./config.js";
 import { WhatsappSummarizer } from "./llm.js";
+import { installMultimodalCapture } from "./multimodal-capture.js";
 import { NexoBridgeStore } from "./nexo-store.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { createBridgeServer } from "./server.js";
@@ -11,14 +13,18 @@ const settingsStore = new AppSettingsStore(config.dataDir);
 const settings = await settingsStore.get();
 const store = new NexoBridgeStore(config.dataDir, config.databaseUrl);
 const conversationStore = new OutputConversationStore(config.dataDir, config.databaseUrl);
+const attachmentInbox = new AttachmentInbox(config.dataDir);
 await store.init();
 await conversationStore.init();
+await attachmentInbox.init();
+await attachmentInbox.cleanup(settings.multimodal.retentionDays).catch(() => undefined);
 
 const manager = new WhatsappManager(store, settingsStore, conversationStore);
+installMultimodalCapture(manager, settingsStore, attachmentInbox);
 if (settings.autoConnectLinkedAccounts) await manager.startLinkedAccounts();
 
 const summarizer = new WhatsappSummarizer(store, settingsStore);
-const codexWorker = new CodexConversationWorker(config.dataDir, settingsStore, conversationStore, manager);
+const codexWorker = new CodexConversationWorker(config.dataDir, settingsStore, conversationStore, manager, attachmentInbox);
 const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore, codexWorker);
 server.listen(config.port, config.host, () => {
   console.log(`WhatsApp Codex Nexo listening on http://${config.host}:${config.port}`);
@@ -26,7 +32,8 @@ server.listen(config.port, config.host, () => {
   console.log(`LLM summarizer: ${settings.llm.enabled ? `${settings.llm.baseUrl} · ${settings.llm.model} · ${settings.llm.defaultLookbackDays}d default window` : "disabled"}`);
   console.log(`OUTPUT conversation: ${settings.outputConversation.enabled ? `enabled for ${settings.outputConversation.authorizedNumbers.length} authorized number(s)` : "disabled"}`);
   console.log(`Codex resident worker: ${settings.codexWorker.enabled ? "enabled" : "disabled"}`);
-  console.log("Multiple INPUT accounts are read-only; OUTPUT conversation replies are isolated from the searchable INPUT archive.");
+  console.log(`Multimodal inbox: ${settings.multimodal.enabled ? `enabled · max ${settings.multimodal.maxFileMb} MB · retention ${settings.multimodal.retentionDays}d` : "disabled"}`);
+  console.log("Multiple INPUT accounts are read-only; OUTPUT conversation replies and media are isolated from the searchable INPUT archive.");
   void codexWorker.start().catch((error) => console.error("Failed to start Codex worker", error));
 });
 

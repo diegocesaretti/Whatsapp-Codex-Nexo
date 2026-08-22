@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-codex-nexo",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Multi-input WhatsApp bridge with a single Codex-controlled output account",
