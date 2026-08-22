@@ -25,7 +25,7 @@ if (settings.autoConnectLinkedAccounts) await manager.startLinkedAccounts();
 
 const summarizer = new WhatsappSummarizer(store, settingsStore);
 const codexWorker = new CodexConversationWorker(config.dataDir, settingsStore, conversationStore, manager, attachmentInbox);
-const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore, codexWorker, attachmentInbox);
+const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore, codexWorker);
 server.listen(config.port, config.host, () => {
   console.log(`WhatsApp Codex Nexo listening on http://${config.host}:${config.port}`);
   console.log(`Storage: ${store.storageMode}${store.storageMode === "neon" ? ` (schema whatsapp_nexo · source ${config.databaseSource})` : " (.data local)"}`);
