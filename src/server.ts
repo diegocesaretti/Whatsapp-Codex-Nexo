@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
+import { CodexConversationWorker } from "./codex-conversation-worker.js";
 import { config } from "./config.js";
 import { WhatsappSummarizer } from "./llm.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
@@ -46,6 +47,7 @@ export function createBridgeServer(
   settingsStore: AppSettingsStore,
   summarizer: WhatsappSummarizer,
   conversationStore: OutputConversationStore,
+  codexWorker: CodexConversationWorker,
 ) {
   return createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${request.headers.host || `${config.host}:${config.port}`}`);
@@ -63,6 +65,7 @@ export function createBridgeServer(
             enabled: settings.outputConversation.enabled,
             authorizedPeers: settings.outputConversation.authorizedNumbers.length,
           },
+          codexWorker: { enabled: settings.codexWorker.enabled, ...codexWorker.status() },
           morningBrief: { enabled: settings.morningBrief.enabled },
           time: new Date().toISOString(),
         }); return;
@@ -71,6 +74,7 @@ export function createBridgeServer(
         const publicSettings = await settingsStore.publicState();
         json(response, 200, {
           ...publicSettings,
+          codexWorkerStatus: codexWorker.status(),
           windowsAutostart: await getWindowsAutostart(),
           platform: process.platform,
           storage: {
@@ -93,13 +97,15 @@ export function createBridgeServer(
           maxSearchResults: body.maxSearchResults,
           morningBrief: body.morningBrief ? { ...current.morningBrief, ...body.morningBrief } : undefined,
           llm: body.llm ? { ...current.llm, ...body.llm } : undefined,
-          outputConversation: body.outputConversation
-            ? { ...current.outputConversation, ...body.outputConversation }
-            : undefined,
+          outputConversation: body.outputConversation ? { ...current.outputConversation, ...body.outputConversation } : undefined,
+          codexWorker: body.codexWorker ? { ...current.codexWorker, ...body.codexWorker } : undefined,
         });
         if (typeof body.llmApiKey === "string") await settingsStore.setLlmApiKey(body.llmApiKey);
         const windowsAutostart = body.windowsAutostart === undefined ? await getWindowsAutostart() : await setWindowsAutostart(Boolean(body.windowsAutostart));
-        json(response, 200, { settings, llmApiKeyConfigured: Boolean(await settingsStore.getLlmApiKey()), windowsAutostart, restartRecommended: false }); return;
+        json(response, 200, { settings, codexWorkerStatus: codexWorker.status(), llmApiKeyConfigured: Boolean(await settingsStore.getLlmApiKey()), windowsAutostart, restartRecommended: false }); return;
+      }
+      if (request.method === "GET" && path === "/api/codex-worker/status") {
+        json(response, 200, { status: codexWorker.status(), settings: (await settingsStore.get()).codexWorker }); return;
       }
       if (request.method === "POST" && path === "/api/llm/summarize") {
         const body = await readJson<{ query?: string; accountIds?: string[]; after?: string; before?: string; limit?: number; focus?: string }>(request);
@@ -110,6 +116,7 @@ export function createBridgeServer(
         json(response, 200, {
           accounts: accounts.map((account) => ({ ...account, runtime: manager.getStatus(account.id) })),
           settings,
+          codexWorker: codexWorker.status(),
           storage: store.storageMode,
           policy: {
             multipleInputs: true,
@@ -118,6 +125,7 @@ export function createBridgeServer(
             outputAccountIsIndexed: false,
             outputConversationAuthorizedOnly: true,
             outputConversationDirectChatsOnly: true,
+            codexWorkerUsesAuthorizedOutputOnly: true,
           },
         }); return;
       }
