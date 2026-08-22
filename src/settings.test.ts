@@ -70,3 +70,20 @@ test("output conversation allowlist is normalized and partial updates preserve i
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("Codex worker is enabled by default and partial updates preserve its other controls", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wa-nexo-settings-"));
+  try {
+    const store = new AppSettingsStore(dir);
+    const initial = await store.get();
+    assert.equal(initial.codexWorker.enabled, true);
+    assert.equal(initial.codexWorker.debounceMs, 1800);
+    await store.update({ codexWorker: { timeoutSeconds: 420 } as never });
+    const value = await store.get();
+    assert.equal(value.codexWorker.enabled, true);
+    assert.equal(value.codexWorker.timeoutSeconds, 420);
+    assert.equal(value.codexWorker.debounceMs, 1800);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
