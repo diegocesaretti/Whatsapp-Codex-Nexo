@@ -87,3 +87,22 @@ test("Codex worker is enabled by default and partial updates preserve its other 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("multimodal inbox is enabled by default with bounded local retention", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wa-nexo-settings-"));
+  try {
+    const store = new AppSettingsStore(dir);
+    const initial = await store.get();
+    assert.equal(initial.multimodal.enabled, true);
+    assert.equal(initial.multimodal.maxFileMb, 25);
+    assert.equal(initial.multimodal.retentionDays, 7);
+    assert.equal(initial.multimodal.audioTranscriptionEnabled, true);
+    assert.equal(initial.multimodal.audioTranscriptionModel, "voxtral-mini-latest");
+    await store.update({ multimodal: { maxFileMb: 999, retentionDays: 0 } as never });
+    const value = await store.get();
+    assert.equal(value.multimodal.maxFileMb, 100);
+    assert.equal(value.multimodal.retentionDays, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
