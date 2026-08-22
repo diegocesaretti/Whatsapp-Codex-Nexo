@@ -242,12 +242,12 @@ export class AttachmentInbox {
     for (const item of index.attachments) {
       try { await stat(this.absolutePath(item)); existing.push(item); } catch {}
     }
-    const sorted = existing.toSorted((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    const sorted = [...existing].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     return {
       files: existing.length,
       bytes: existing.reduce((sum, item) => sum + item.sizeBytes, 0),
       oldestAt: sorted[0]?.createdAt,
-      newestAt: sorted.at(-1)?.createdAt,
+      newestAt: sorted.length ? sorted[sorted.length - 1]?.createdAt : undefined,
     };
   }
 }
