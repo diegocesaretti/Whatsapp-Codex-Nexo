@@ -26,9 +26,16 @@ function bounded(value: number | undefined, fallback: number, max = 200): number
 }
 
 export class NexoBridgeStore extends BridgeStore {
+  private outputPhoneCache?: { value?: string; expiresAt: number };
+
   private async outputPhone(): Promise<string | undefined> {
+    if (this.outputPhoneCache && Date.now() < this.outputPhoneCache.expiresAt) {
+      return this.outputPhoneCache.value;
+    }
     const output = await super.getOutputAccount();
-    return phoneNumberFromJid(output?.phoneJid);
+    const value = phoneNumberFromJid(output?.phoneJid);
+    this.outputPhoneCache = { value, expiresAt: Date.now() + 5_000 };
+    return value;
   }
 
   override async updateChatNames(accountId: string, entries: ChatNameEntry[]): Promise<void> {
