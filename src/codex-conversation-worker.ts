@@ -1,6 +1,4 @@
-import { execFile } from "node:child_process";
-import { mkdir, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { CodexWorkerStateStore } from "./codex-worker-state.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { AppSettingsStore } from "./settings.js";
@@ -65,22 +63,65 @@ export function buildCodexWhatsappPrompt(
   ].join("\n\n");
 }
 
-function executeCodex(command: string, args: string[], options: { cwd: string; timeoutMs: number }): Promise<{ stdout: string; stderr: string }> {
+function validThreadId(value: string | undefined): value is string {
+  return Boolean(value && /^[0-9a-f-]{20,80}$/i.test(value));
+}
+
+function executeCodex(prompt: string, existingThread: string | undefined, options: { cwd: string; timeoutMs: number }): Promise<CodexExecResult> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, {
+    const resume = validThreadId(existingThread) ? ` resume ${existingThread}` : "";
+    const directArgs = validThreadId(existingThread)
+      ? ["exec", "resume", existingThread, "--json", "--color", "never", "--skip-git-repo-check", "-"]
+      : ["exec", "--json", "--color", "never", "--skip-git-repo-check", "-"];
+    const command = process.platform === "win32" ? "cmd.exe" : "codex";
+    const args = process.platform === "win32"
+      ? ["/d", "/s", "/c", `codex exec${resume} --json --color never --skip-git-repo-check -`]
+      : directArgs;
+
+    const child = spawn(command, args, {
       cwd: options.cwd,
-      timeout: options.timeoutMs,
-      maxBuffer: 12 * 1024 * 1024,
       windowsHide: true,
       env: process.env,
-    }, (error, stdout, stderr) => {
-      if (error) {
-        const detail = String(stderr || stdout || error.message).trim().slice(-4000);
-        reject(new Error(`Codex CLI failed: ${detail || error.message}`));
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const max = 12 * 1024 * 1024;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(parseCodexJsonl(stdout));
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(new Error(`Codex CLI timed out after ${Math.round(options.timeoutMs / 1000)} seconds`));
+    }, options.timeoutMs);
+    timer.unref?.();
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+      if (stdout.length > max) {
+        child.kill();
+        finish(new Error("Codex CLI output exceeded the safety limit"));
+      }
+    });
+    child.stderr.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-8000); });
+    child.on("error", (error) => finish(new Error(`Could not start Codex CLI: ${error.message}`)));
+    child.on("close", (code) => {
+      if (settled) return;
+      if (code !== 0) {
+        finish(new Error(`Codex CLI exited with code ${code}: ${(stderr || stdout).trim().slice(-4000)}`));
         return;
       }
-      resolve({ stdout: String(stdout), stderr: String(stderr) });
+      finish();
     });
+    child.stdin.on("error", () => undefined);
+    child.stdin.end(prompt);
   });
 }
 
@@ -97,7 +138,7 @@ export class CodexConversationWorker {
   private readonly failures = new Map<string, { attempts: number; nextAt: number }>();
 
   constructor(
-    private readonly dataDir: string,
+    dataDir: string,
     private readonly settingsStore: AppSettingsStore,
     private readonly conversationStore: OutputConversationStore,
     private readonly manager: WhatsappManager,
@@ -183,8 +224,16 @@ export class CodexConversationWorker {
     try {
       const context = await this.conversationStore.list({ peer: peerPhone, limit: 30 });
       const prompt = buildCodexWhatsappPrompt(peerPhone, inbound, context);
-      const result = await this.runCodex(peerPhone, prompt, timeoutSeconds, configuredCwd);
+      const existingThread = await this.state.getThreadId(peerPhone);
+      const result = await executeCodex(prompt, existingThread, {
+        cwd: configuredCwd.trim() || process.cwd(),
+        timeoutMs: timeoutSeconds * 1000,
+      });
       if (!result.answer.trim()) throw new Error("Codex returned an empty final answer");
+      if (result.threadId) {
+        await this.state.setThreadId(peerPhone, result.threadId);
+        this.sessionCount = await this.state.count();
+      }
 
       await this.manager.replyToOutputConversationMessage({
         inboundMessageId: newest.id,
@@ -202,36 +251,6 @@ export class CodexConversationWorker {
       this.failures.set(newest.id, { attempts, nextAt: Date.now() + backoff });
       this.lastError = error instanceof Error ? error.message : String(error);
       console.error(`[codex-worker:${peerPhone}] failed attempt ${attempts}`, error);
-    }
-  }
-
-  private async runCodex(peerPhone: string, prompt: string, timeoutSeconds: number, configuredCwd: string): Promise<CodexExecResult> {
-    const codex = process.platform === "win32" ? "codex.cmd" : "codex";
-    const cwd = configuredCwd.trim() || process.cwd();
-    const tmpDir = join(this.dataDir, "tmp");
-    await mkdir(tmpDir, { recursive: true });
-    const outputFile = join(tmpDir, `codex-worker-${process.pid}-${Date.now()}.txt`);
-    const existingThread = await this.state.getThreadId(peerPhone);
-    const common = ["--json", "--color", "never", "--skip-git-repo-check", "--output-last-message", outputFile];
-    const args = existingThread
-      ? ["exec", "resume", existingThread, ...common, prompt]
-      : ["exec", ...common, prompt];
-
-    try {
-      const { stdout } = await executeCodex(codex, args, { cwd, timeoutMs: timeoutSeconds * 1000 });
-      const parsed = parseCodexJsonl(stdout);
-      let answer = parsed.answer;
-      try {
-        const fileAnswer = (await readFile(outputFile, "utf8")).trim();
-        if (fileAnswer) answer = fileAnswer;
-      } catch {}
-      if (parsed.threadId) {
-        await this.state.setThreadId(peerPhone, parsed.threadId);
-        this.sessionCount = await this.state.count();
-      }
-      return { threadId: parsed.threadId, answer };
-    } finally {
-      await rm(outputFile, { force: true }).catch(() => undefined);
     }
   }
 }
