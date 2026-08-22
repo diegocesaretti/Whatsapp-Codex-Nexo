@@ -1,1 +1,1 @@
-export { renderAdminPage } from "./ui-v3.js";
+export { renderAdminPage } from "./ui-v4.js";
