@@ -33,6 +33,17 @@ export interface CodexWorkerSettings {
   workingDirectory: string;
 }
 
+export interface MultimodalSettings {
+  enabled: boolean;
+  maxFileMb: number;
+  retentionDays: number;
+  attachImagesToCodex: boolean;
+  audioTranscriptionEnabled: boolean;
+  audioTranscriptionModel: string;
+  audioLanguage: string;
+  audioTranscriptionTimeoutSeconds: number;
+}
+
 export interface MorningBriefSettings {
   enabled: boolean;
   destination: string;
@@ -48,6 +59,7 @@ export interface AppSettings {
   llm: LlmSettings;
   outputConversation: OutputConversationSettings;
   codexWorker: CodexWorkerSettings;
+  multimodal: MultimodalSettings;
   morningBrief: MorningBriefSettings;
 }
 
@@ -86,6 +98,16 @@ const defaults: AppSettings = {
     timeoutSeconds: 180,
     maxBatchMessages: 8,
     workingDirectory: "",
+  },
+  multimodal: {
+    enabled: true,
+    maxFileMb: 25,
+    retentionDays: 7,
+    attachImagesToCodex: true,
+    audioTranscriptionEnabled: true,
+    audioTranscriptionModel: "voxtral-mini-latest",
+    audioLanguage: "",
+    audioTranscriptionTimeoutSeconds: 120,
   },
 };
 
@@ -130,6 +152,7 @@ export class AppSettingsStore {
     const llmPatch = patch.llm ? defined(patch.llm) : {};
     const conversationPatch = patch.outputConversation ? defined(patch.outputConversation) : {};
     const workerPatch = patch.codexWorker ? defined(patch.codexWorker) : {};
+    const multimodalPatch = patch.multimodal ? defined(patch.multimodal) : {};
     const morningPatch = patch.morningBrief ? defined(patch.morningBrief) : {};
     const next = this.normalize({
       ...current,
@@ -137,6 +160,7 @@ export class AppSettingsStore {
       llm: { ...current.llm, ...llmPatch },
       outputConversation: { ...current.outputConversation, ...conversationPatch },
       codexWorker: { ...current.codexWorker, ...workerPatch },
+      multimodal: { ...current.multimodal, ...multimodalPatch },
       morningBrief: { ...current.morningBrief, ...morningPatch },
     });
     await mkdir(dirname(this.path), { recursive: true });
@@ -170,6 +194,7 @@ export class AppSettingsStore {
     const llm = value.llm ?? defaults.llm;
     const outputConversation = value.outputConversation ?? defaults.outputConversation;
     const codexWorker = value.codexWorker ?? defaults.codexWorker;
+    const multimodal = value.multimodal ?? defaults.multimodal;
     const morning = value.morningBrief ?? defaults.morningBrief;
     return {
       autoConnectLinkedAccounts: value.autoConnectLinkedAccounts ?? defaults.autoConnectLinkedAccounts,
@@ -203,6 +228,16 @@ export class AppSettingsStore {
         timeoutSeconds: clampInt(codexWorker.timeoutSeconds, 30, 900, defaults.codexWorker.timeoutSeconds),
         maxBatchMessages: clampInt(codexWorker.maxBatchMessages, 1, 20, defaults.codexWorker.maxBatchMessages),
         workingDirectory: codexWorker.workingDirectory?.trim().slice(0, 1000) || "",
+      },
+      multimodal: {
+        enabled: multimodal.enabled ?? defaults.multimodal.enabled,
+        maxFileMb: clampInt(multimodal.maxFileMb, 1, 100, defaults.multimodal.maxFileMb),
+        retentionDays: clampInt(multimodal.retentionDays, 1, 90, defaults.multimodal.retentionDays),
+        attachImagesToCodex: multimodal.attachImagesToCodex ?? defaults.multimodal.attachImagesToCodex,
+        audioTranscriptionEnabled: multimodal.audioTranscriptionEnabled ?? defaults.multimodal.audioTranscriptionEnabled,
+        audioTranscriptionModel: multimodal.audioTranscriptionModel?.trim().slice(0, 200) || defaults.multimodal.audioTranscriptionModel,
+        audioLanguage: multimodal.audioLanguage?.trim().slice(0, 12) || "",
+        audioTranscriptionTimeoutSeconds: clampInt(multimodal.audioTranscriptionTimeoutSeconds, 15, 600, defaults.multimodal.audioTranscriptionTimeoutSeconds),
       },
     };
   }
