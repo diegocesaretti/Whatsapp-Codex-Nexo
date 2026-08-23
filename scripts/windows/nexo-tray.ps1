@@ -14,6 +14,14 @@ $pidFile = Join-Path $data 'nexo-daemon.pid'
 $url = 'http://127.0.0.1:3210'
 $daemon = $null
 
+$createdNew = $false
+$mutex = [System.Threading.Mutex]::new($true, 'Local\WhatsappCodexNexoTray', [ref]$createdNew)
+if (-not $createdNew) {
+  if (-not $NoOpen) { Start-Process $url }
+  $mutex.Dispose()
+  exit 0
+}
+
 function Test-Nexo {
   try {
     $r = Invoke-RestMethod -Uri "$url/health" -TimeoutSec 1
@@ -21,33 +29,53 @@ function Test-Nexo {
   } catch { return $false }
 }
 
+function Get-NexoDaemonProcess {
+  if (-not (Test-Path $pidFile)) { return $null }
+  $saved = Get-Content $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($saved -notmatch '^\d+$') { return $null }
+  try { return Get-Process -Id ([int]$saved) -ErrorAction Stop }
+  catch {
+    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+    return $null
+  }
+}
+
 function Start-Nexo {
-  if (Test-Nexo) { return }
+  if (Test-Nexo) { return $true }
+  $existing = Get-NexoDaemonProcess
+  if ($existing) { return $false }
   $cmd = "cd /d `"$repo`" && pnpm start >> `"$log`" 2>&1"
   $script:daemon = Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WindowStyle Hidden -PassThru
   Set-Content -Path $pidFile -Value $script:daemon.Id -Encoding ascii
-  for ($i=0; $i -lt 40; $i++) {
+  for ($i=0; $i -lt 120; $i++) {
     Start-Sleep -Milliseconds 250
-    if (Test-Nexo) { return }
+    if (Test-Nexo) { return $true }
     if ($script:daemon.HasExited) { break }
   }
+  return $false
 }
 
 function Stop-Nexo {
   if ($script:daemon -and -not $script:daemon.HasExited) {
     Stop-Process -Id $script:daemon.Id -Force -ErrorAction SilentlyContinue
-  } elseif (Test-Path $pidFile) {
-    $saved = Get-Content $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($saved -match '^\d+$') { Stop-Process -Id ([int]$saved) -Force -ErrorAction SilentlyContinue }
+  } else {
+    $existing = Get-NexoDaemonProcess
+    if ($existing) { Stop-Process -Id $existing.Id -Force -ErrorAction SilentlyContinue }
   }
   Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
 }
 
-Start-Nexo
+function Install-NexoShortcut {
+  $installer = Join-Path $PSScriptRoot 'install-shortcut.ps1'
+  & $installer | Out-Null
+}
+
+Start-Nexo | Out-Null
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $openItem = $menu.Items.Add('Abrir Nexo')
 $restartItem = $menu.Items.Add('Reiniciar Nexo')
+$shortcutItem = $menu.Items.Add('Crear / reparar acceso directo')
 $menu.Items.Add('-') | Out-Null
 $exitItem = $menu.Items.Add('Salir')
 
@@ -57,19 +85,51 @@ $notify.Text = 'WhatsApp Codex Nexo'
 $notify.ContextMenuStrip = $menu
 $notify.Visible = $true
 
-$openItem.Add_Click({ Start-Process $url })
-$notify.Add_DoubleClick({ Start-Process $url })
+$openItem.Add_Click({
+  if (-not (Test-Nexo)) { Start-Nexo | Out-Null }
+  Start-Process $url
+})
+$notify.Add_DoubleClick({
+  if (-not (Test-Nexo)) { Start-Nexo | Out-Null }
+  Start-Process $url
+})
 $restartItem.Add_Click({
   Stop-Nexo
   Start-Sleep -Milliseconds 500
-  Start-Nexo
+  Start-Nexo | Out-Null
+})
+$shortcutItem.Add_Click({
+  try {
+    Install-NexoShortcut
+    $notify.BalloonTipTitle = 'Nexo'
+    $notify.BalloonTipText = 'Acceso directo creado o reparado en el escritorio.'
+    $notify.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Info
+    $notify.ShowBalloonTip(3000)
+  } catch {
+    [System.Windows.Forms.MessageBox]::Show(
+      "No se pudo crear el acceso directo: $($_.Exception.Message)",
+      'Nexo',
+      [System.Windows.Forms.MessageBoxButtons]::OK,
+      [System.Windows.Forms.MessageBoxIcon]::Error
+    ) | Out-Null
+  }
 })
 $exitItem.Add_Click({
+  $watchdog.Stop()
   Stop-Nexo
   $notify.Visible = $false
   $notify.Dispose()
   [System.Windows.Forms.Application]::Exit()
 })
+
+$watchdog = New-Object System.Windows.Forms.Timer
+$watchdog.Interval = 10000
+$watchdog.Add_Tick({
+  if (-not (Test-Nexo) -and -not (Get-NexoDaemonProcess)) {
+    Start-Nexo | Out-Null
+  }
+})
+$watchdog.Start()
 
 if (-not $NoOpen) {
   try {
@@ -78,4 +138,11 @@ if (-not $NoOpen) {
   } catch {}
 }
 
-[System.Windows.Forms.Application]::Run()
+try {
+  [System.Windows.Forms.Application]::Run()
+} finally {
+  $watchdog.Stop()
+  $watchdog.Dispose()
+  if ($createdNew) { try { $mutex.ReleaseMutex() } catch {} }
+  $mutex.Dispose()
+}
