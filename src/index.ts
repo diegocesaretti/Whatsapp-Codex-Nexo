@@ -7,6 +7,7 @@ import { NexoBridgeStore } from "./nexo-store.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { createBridgeServer } from "./server.js";
 import { AppSettingsStore } from "./settings.js";
+import { retryTransientStartup } from "./startup-retry.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 
 const settingsStore = new AppSettingsStore(config.dataDir);
@@ -14,8 +15,8 @@ const settings = await settingsStore.get();
 const store = new NexoBridgeStore(config.dataDir, config.databaseUrl);
 const conversationStore = new OutputConversationStore(config.dataDir, config.databaseUrl);
 const attachmentInbox = new AttachmentInbox(config.dataDir);
-await store.init();
-await conversationStore.init();
+await retryTransientStartup("primary storage", () => store.init());
+await retryTransientStartup("OUTPUT conversation storage", () => conversationStore.init());
 await attachmentInbox.init();
 await attachmentInbox.cleanup(settings.multimodal.retentionDays).catch(() => undefined);
 
