@@ -11,12 +11,14 @@ import { retryTransientStartup } from "./startup-retry.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 
 const settingsStore = new AppSettingsStore(config.dataDir);
-const settings = await settingsStore.get();
-const store = new NexoBridgeStore(config.dataDir, config.databaseUrl);
+let settings = await settingsStore.get();
+const store = new NexoBridgeStore(config.dataDir, config.databaseUrl, settingsStore);
 const conversationStore = new OutputConversationStore(config.dataDir, config.databaseUrl);
 const attachmentInbox = new AttachmentInbox(config.dataDir);
 await retryTransientStartup("primary storage", () => store.init());
 await retryTransientStartup("OUTPUT conversation storage", () => conversationStore.init());
+await settingsStore.syncInputIdentities(await store.listAccounts());
+settings = await settingsStore.get();
 await attachmentInbox.init();
 await attachmentInbox.cleanup(settings.multimodal.retentionDays).catch(() => undefined);
 
@@ -31,7 +33,7 @@ server.listen(config.port, config.host, () => {
   console.log(`WhatsApp Codex Nexo listening on http://${config.host}:${config.port}`);
   console.log(`Storage: ${store.storageMode}${store.storageMode === "neon" ? ` (schema whatsapp_nexo · source ${config.databaseSource})` : " (.data local)"}`);
   console.log(`LLM summarizer: ${settings.llm.enabled ? `${settings.llm.baseUrl} · ${settings.llm.model} · ${settings.llm.defaultLookbackDays}d default window` : "disabled"}`);
-  console.log(`OUTPUT conversation: ${settings.outputConversation.enabled ? `enabled for ${settings.outputConversation.authorizedNumbers.length} authorized number(s)` : "disabled"}`);
+  console.log(`OUTPUT conversation: ${settings.outputConversation.enabled ? `enabled for ${settings.outputConversation.authorizedNumbers.length} authorized number(s) across ${settings.outputConversation.identities.length} identity record(s)` : "disabled"}`);
   console.log(`Codex resident worker: ${settings.codexWorker.enabled ? "enabled" : "disabled"}`);
   console.log(`Multimodal inbox: ${settings.multimodal.enabled ? `enabled · max ${settings.multimodal.maxFileMb} MB · retention ${settings.multimodal.retentionDays}d` : "disabled"}`);
   console.log("Multiple INPUT accounts are read-only; OUTPUT conversation replies and media are isolated from the searchable INPUT archive.");
