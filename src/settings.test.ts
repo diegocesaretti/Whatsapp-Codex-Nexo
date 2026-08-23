@@ -59,7 +59,7 @@ test("output conversation allowlist is normalized and partial updates preserve i
         enabled: true,
         authorizedNumbers: ["+54 9 3532 55-5555", "5493532555555"],
         maxContextMessages: 120,
-      },
+      } as never,
     });
     await store.update({ outputConversation: { maxContextMessages: 60 } as never });
     const value = await store.get();
