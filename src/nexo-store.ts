@@ -1,7 +1,8 @@
 import { phoneNumberFromJid } from "./output-conversation-auth.js";
 import { isCodexControlMirrorChat, isCodexControlMirrorMessage } from "./source-policy.js";
+import { AppSettingsStore } from "./settings.js";
 import { BridgeStore } from "./store.js";
-import type { StoredMessage, WhatsappChatSummary } from "./types.js";
+import type { AccountRecord, StoredMessage, WhatsappChatSummary } from "./types.js";
 
 export interface ChatNameEntry {
   jid?: string | null;
@@ -28,6 +29,10 @@ function bounded(value: number | undefined, fallback: number, max = 200): number
 export class NexoBridgeStore extends BridgeStore {
   private outputPhoneCache?: { value?: string; expiresAt: number };
 
+  constructor(dataDir: string, databaseUrl?: string, private readonly settingsStore?: AppSettingsStore) {
+    super(dataDir, databaseUrl);
+  }
+
   private async outputPhone(): Promise<string | undefined> {
     if (this.outputPhoneCache && Date.now() < this.outputPhoneCache.expiresAt) {
       return this.outputPhoneCache.value;
@@ -36,6 +41,18 @@ export class NexoBridgeStore extends BridgeStore {
     const value = phoneNumberFromJid(output?.phoneJid);
     this.outputPhoneCache = { value, expiresAt: Date.now() + 5_000 };
     return value;
+  }
+
+  override async updateAccount(
+    id: string,
+    patch: Partial<Omit<AccountRecord, "id" | "role" | "createdAt">>,
+  ): Promise<AccountRecord> {
+    const updated = await super.updateAccount(id, patch);
+    if (updated.role === "output") this.outputPhoneCache = undefined;
+    if (updated.role === "input" && updated.phoneJid && this.settingsStore) {
+      await this.settingsStore.ensureInputIdentity(updated);
+    }
+    return updated;
   }
 
   override async updateChatNames(accountId: string, entries: ChatNameEntry[]): Promise<void> {
