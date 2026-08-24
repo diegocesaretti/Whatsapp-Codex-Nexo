@@ -41,7 +41,7 @@ server.listen(config.port, config.host, () => {
 });
 
 let stopping = false;
-async function shutdown(signal: string): Promise<void> {
+export async function shutdownNexo(signal: string, exitProcess = true): Promise<void> {
   if (stopping) return;
   stopping = true;
   console.log(`\n${signal}: stopping Nexo...`);
@@ -52,8 +52,8 @@ async function shutdown(signal: string): Promise<void> {
     store.close().catch((error) => console.error("Failed to close storage", error)),
     conversationStore.close().catch((error) => console.error("Failed to close output conversation storage", error)),
   ]);
-  process.exit(0);
+  if (exitProcess) process.exit(0);
 }
 
-process.on("SIGINT", () => void shutdown("SIGINT"));
-process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdownNexo("SIGINT"));
+process.on("SIGTERM", () => void shutdownNexo("SIGTERM"));
