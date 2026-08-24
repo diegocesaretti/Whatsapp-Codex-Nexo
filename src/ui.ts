@@ -1,3 +1,4 @@
+import { augmentCodexStatusUi } from "./ui-codex-status.js";
 import { augmentIdentityUi } from "./ui-identities.js";
 import { renderAdminPage as renderV4 } from "./ui-v4.js";
 
@@ -20,5 +21,5 @@ export function renderAdminPage(): string {
       "Invoca tu Codex CLI autenticado y mantiene una sesión por número autorizado.",
       "Invoca tu Codex CLI autenticado y mantiene una sesión por persona/número autorizado.",
     );
-  return augmentIdentityUi(base);
+  return augmentCodexStatusUi(augmentIdentityUi(base));
 }
