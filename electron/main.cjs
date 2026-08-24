@@ -2,6 +2,7 @@ const { app, BrowserWindow, Menu, Tray, dialog, shell } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const util = require('node:util');
 const { pathToFileURL } = require('node:url');
 const { parse: parseDotenv } = require('dotenv');
 
@@ -17,6 +18,22 @@ let backendStopped = false;
 let backendOwned = false;
 let backendModule;
 let healthTimer;
+let desktopLogPath;
+let desktopLoggingInstalled = false;
+
+// A packaged Windows GUI process may inherit stdout/stderr handles that are
+// already closed. Node turns writes to those handles into an EPIPE 'error'
+// event which is fatal when nobody listens for it. Never let diagnostic output
+// take down Nexo.
+for (const stream of [process.stdout, process.stderr]) {
+  if (!stream || typeof stream.on !== 'function') continue;
+  stream.on('error', (error) => {
+    if (error && (error.code === 'EPIPE' || error.code === 'ERR_STREAM_DESTROYED')) return;
+    // Streams are only diagnostic channels in the desktop host. Other stream
+    // errors are deliberately ignored here; application errors are logged by
+    // console/error handling below and by the backend itself.
+  });
+}
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -27,6 +44,68 @@ if (!gotLock) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function stringifyLogArg(value) {
+  if (typeof value === 'string') return value;
+  if (value instanceof Error) return value.stack || value.message;
+  return util.inspect(value, { depth: 6, colors: false, breakLength: 180, compact: true });
+}
+
+function appendDesktopLog(level, args) {
+  if (!desktopLogPath) return;
+  try {
+    const line = `${new Date().toISOString()} [${level}] ${args.map(stringifyLogArg).join(' ')}\n`;
+    fs.appendFileSync(desktopLogPath, line, 'utf8');
+  } catch {
+    // Logging must never become a failure path for the application.
+  }
+}
+
+function installDesktopLogging() {
+  if (desktopLoggingInstalled) return;
+  desktopLoggingInstalled = true;
+
+  const logsDir = path.join(app.getPath('userData'), 'logs');
+  desktopLogPath = path.join(logsDir, 'nexo.log');
+  try {
+    fs.mkdirSync(logsDir, { recursive: true });
+    if (fs.existsSync(desktopLogPath) && fs.statSync(desktopLogPath).size > 5 * 1024 * 1024) {
+      const previous = `${desktopLogPath}.1`;
+      try { fs.rmSync(previous, { force: true }); } catch {}
+      try { fs.renameSync(desktopLogPath, previous); } catch {}
+    }
+  } catch {
+    desktopLogPath = undefined;
+  }
+
+  process.env.NEXO_LOG_FILE = desktopLogPath || '';
+  const original = {
+    log: console.log.bind(console),
+    info: console.info.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+    debug: console.debug.bind(console),
+  };
+
+  const replace = (name, level) => {
+    console[name] = (...args) => {
+      appendDesktopLog(level, args);
+      // Development still benefits from a real terminal. Packaged Windows
+      // builds intentionally avoid stdout/stderr entirely because those handles
+      // may be absent or broken.
+      if (!app.isPackaged) {
+        try { original[name](...args); } catch {}
+      }
+    };
+  };
+
+  replace('log', 'INFO');
+  replace('info', 'INFO');
+  replace('warn', 'WARN');
+  replace('error', 'ERROR');
+  replace('debug', 'DEBUG');
+  appendDesktopLog('INFO', [`Nexo desktop logging started · ${process.platform} · packaged=${app.isPackaged}`]);
 }
 
 async function isHealthy(timeoutMs = 900) {
@@ -227,6 +306,7 @@ async function createTray() {
       { label: healthy ? 'Estado: conectado' : 'Estado: iniciando / reconectando', enabled: false },
       { type: 'separator' },
       { label: 'Reiniciar Nexo', click: () => requestQuit({ relaunch: true }) },
+      { label: 'Abrir carpeta de logs', click: () => { if (desktopLogPath) void shell.showItemInFolder(desktopLogPath); } },
       { label: 'Salir', click: () => requestQuit() },
     ]));
   };
@@ -254,7 +334,10 @@ async function boot() {
 }
 
 if (gotLock) {
-  app.whenReady().then(() => void boot());
+  app.whenReady().then(() => {
+    installDesktopLogging();
+    return boot();
+  });
   app.on('activate', () => showMainWindow());
   app.on('window-all-closed', () => undefined);
   app.on('before-quit', (event) => {
