@@ -44,7 +44,7 @@
     "appId": "ar.diegocesaretti.nexo",
     "productName": "Nexo",
     "electronVersion": "43.4.1",
-    "asar": true,
+    "asar": false,
     "npmRebuild": false,
     "directories": {
       "output": "release"
