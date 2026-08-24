@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { AttachmentInbox, type InboxAttachment } from "./attachment-inbox.js";
 import { transcribeInboxAudio } from "./audio-transcriber.js";
+import { environmentWithCodexPath, resolveCodexCli, type CodexCliStatus } from "./codex-cli.js";
 import { CodexWorkerStateStore } from "./codex-worker-state.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { AppSettingsStore } from "./settings.js";
@@ -15,6 +16,7 @@ export interface CodexWorkerStatus {
   lastSuccessAt?: string;
   lastError?: string;
   sessionCount: number;
+  codexCli: CodexCliStatus;
 }
 
 export interface CodexExecResult {
@@ -113,7 +115,7 @@ function windowsQuote(value: string): string {
 function executeCodex(
   prompt: string,
   existingThread: string | undefined,
-  options: { cwd: string; timeoutMs: number; imagePaths?: string[] },
+  options: { cwd: string; timeoutMs: number; cliPath: string; imagePaths?: string[] },
 ): Promise<CodexExecResult> {
   return new Promise((resolve, reject) => {
     const validThread = validThreadId(existingThread) ? existingThread : undefined;
@@ -122,7 +124,7 @@ function executeCodex(
     const directArgs = validThread
       ? ["exec", "resume", validThread, ...imageArgs, "--json", "--color", "never", "--skip-git-repo-check", "-"]
       : ["exec", ...imageArgs, "--json", "--color", "never", "--skip-git-repo-check", "-"];
-    const command = process.platform === "win32" ? "cmd.exe" : "codex";
+    const command = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : options.cliPath;
     const resume = validThread ? ` resume ${validThread}` : "";
     const winImages = imagePaths.map((path) => ` --image ${windowsQuote(path)}`).join("");
     const args = process.platform === "win32"
@@ -132,7 +134,7 @@ function executeCodex(
     const child = spawn(command, args, {
       cwd: options.cwd,
       windowsHide: true,
-      env: process.env,
+      env: environmentWithCodexPath(options.cliPath),
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
@@ -185,6 +187,12 @@ export class CodexConversationWorker {
   private lastSuccessAt?: string;
   private lastError?: string;
   private sessionCount = 0;
+  private codexCliStatus: CodexCliStatus = {
+    available: false,
+    source: "unavailable",
+    checkedAt: new Date(0).toISOString(),
+    error: "Codex CLI todavía no fue detectado",
+  };
   private readonly state: CodexWorkerStateStore;
   private readonly failures = new Map<string, { attempts: number; nextAt: number }>();
 
@@ -202,6 +210,7 @@ export class CodexConversationWorker {
     if (this.started) return;
     this.started = true;
     this.sessionCount = await this.state.count().catch(() => 0);
+    await this.refreshCodexCli(true);
     await this.schedule(50);
   }
 
@@ -209,6 +218,11 @@ export class CodexConversationWorker {
     this.started = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
+  }
+
+  async refreshCodexCli(force = false): Promise<CodexCliStatus> {
+    this.codexCliStatus = await resolveCodexCli(force);
+    return this.codexCliStatus;
   }
 
   status(): CodexWorkerStatus {
@@ -220,6 +234,7 @@ export class CodexConversationWorker {
       lastSuccessAt: this.lastSuccessAt,
       lastError: this.lastError,
       sessionCount: this.sessionCount,
+      codexCli: this.codexCliStatus,
     };
   }
 
@@ -297,7 +312,20 @@ export class CodexConversationWorker {
   private async processPeer(peerPhone: string, inbound: OutputConversationMessage[], timeoutSeconds: number, configuredCwd: string): Promise<void> {
     const newest = inbound[inbound.length - 1]!;
     this.currentPeer = peerPhone;
+    let presenceTimer: NodeJS.Timeout | undefined;
+    let presenceStarted = false;
     try {
+      const cli = await this.refreshCodexCli(false);
+      if (!cli.available || !cli.path) throw new Error(cli.error || "Codex CLI no encontrado");
+
+      await this.manager.beginOutputConversationActivity(newest.peerJid).then(() => { presenceStarted = true; }).catch(() => undefined);
+      if (presenceStarted) {
+        presenceTimer = setInterval(() => {
+          void this.manager.refreshOutputConversationActivity(newest.peerJid).catch(() => undefined);
+        }, 8000);
+        presenceTimer.unref?.();
+      }
+
       const inboundIds = new Set(inbound.map((message) => message.id));
       const context = (await this.conversationStore.list({ peer: peerPhone, limit: 30 }))
         .filter((message) => !inboundIds.has(message.id));
@@ -311,6 +339,7 @@ export class CodexConversationWorker {
       const result = await executeCodex(prompt, existingThread, {
         cwd: configuredCwd.trim() || process.cwd(),
         timeoutMs: timeoutSeconds * 1000,
+        cliPath: cli.path,
         imagePaths,
       });
       if (!result.answer.trim()) throw new Error("Codex returned an empty final answer");
@@ -338,6 +367,9 @@ export class CodexConversationWorker {
       this.failures.set(newest.id, { attempts, nextAt: Date.now() + backoff });
       this.lastError = error instanceof Error ? error.message : String(error);
       console.error(`[codex-worker:${peerPhone}] failed attempt ${attempts}`, error);
+    } finally {
+      if (presenceTimer) clearInterval(presenceTimer);
+      if (presenceStarted) await this.manager.endOutputConversationActivity(newest.peerJid).catch(() => undefined);
     }
   }
 }

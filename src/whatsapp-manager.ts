@@ -32,6 +32,7 @@ import type {
 
 type Socket = ReturnType<typeof makeWASocket>;
 type WaWebVersion = Awaited<ReturnType<typeof fetchLatestWaWebVersion>>["version"];
+type OutputPresence = "available" | "unavailable" | "composing" | "paused";
 type ExtendedMessageKey = WAMessage["key"] & {
   remoteJidAlt?: string | null;
   participantAlt?: string | null;
@@ -224,6 +225,34 @@ export class WhatsappManager {
     this.sessions.clear();
   }
 
+  private async setOutputConversationPresence(to: string, presence: OutputPresence): Promise<void> {
+    const output = await this.store.getOutputAccount();
+    if (!output) throw new Error("No WhatsApp output account is configured");
+    await this.start(output.id);
+    const runtime = this.sessions.get(output.id);
+    if (!runtime?.socket || runtime.state !== "open") throw new Error("WhatsApp output account is not connected");
+    if (presence === "available" || presence === "unavailable") {
+      await runtime.socket.sendPresenceUpdate(presence);
+    } else {
+      await runtime.socket.sendPresenceUpdate(presence, normalizeSendTarget(to));
+    }
+    runtime.updatedAt = new Date();
+  }
+
+  async beginOutputConversationActivity(to: string): Promise<void> {
+    await this.setOutputConversationPresence(to, "available");
+    await this.setOutputConversationPresence(to, "composing");
+  }
+
+  async refreshOutputConversationActivity(to: string): Promise<void> {
+    await this.setOutputConversationPresence(to, "composing");
+  }
+
+  async endOutputConversationActivity(to: string): Promise<void> {
+    await this.setOutputConversationPresence(to, "paused").catch(() => undefined);
+    await this.setOutputConversationPresence(to, "unavailable").catch(() => undefined);
+  }
+
   async replyToArchivedMessage(input: {
     storedMessageId: string;
     text: string;
@@ -297,20 +326,27 @@ export class WhatsappManager {
       throw new Error("WhatsApp output account is not connected");
     }
     const to = normalizeSendTarget(input.to);
-    const result = await runtime.socket.sendMessage(to, { text: message });
-    const audit: OutboundAudit = {
-      id: randomUUID(),
-      accountId: output.id,
-      to,
-      text: message,
-      reason: input.reason?.trim().slice(0, 500) || undefined,
-      replyTo: input.replyTo,
-      messageId: result?.key.id ?? undefined,
-      sentAt: new Date().toISOString(),
-    };
-    await this.store.appendOutbound(audit);
-    await this.captureOutboundConversation(output, audit, input.conversationReplyToId);
-    return audit;
+    await runtime.socket.sendPresenceUpdate("available").catch(() => undefined);
+    try {
+      const result = await runtime.socket.sendMessage(to, { text: message });
+      const audit: OutboundAudit = {
+        id: randomUUID(),
+        accountId: output.id,
+        to,
+        text: message,
+        reason: input.reason?.trim().slice(0, 500) || undefined,
+        replyTo: input.replyTo,
+        messageId: result?.key.id ?? undefined,
+        sentAt: new Date().toISOString(),
+      };
+      await this.store.appendOutbound(audit);
+      await this.captureOutboundConversation(output, audit, input.conversationReplyToId);
+      runtime.lastMessageAt = new Date();
+      runtime.updatedAt = new Date();
+      return audit;
+    } finally {
+      await runtime.socket.sendPresenceUpdate("unavailable").catch(() => undefined);
+    }
   }
 
   private async captureOutboundConversation(

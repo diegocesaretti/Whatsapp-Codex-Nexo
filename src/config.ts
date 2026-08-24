@@ -19,6 +19,11 @@ interface DatabaseDiscovery {
   sourcePath?: string;
 }
 
+export function normalizeDatabaseSslMode(value: string | undefined): string | undefined {
+  if (!value) return value;
+  return value.replace(/([?&]sslmode=)(prefer|require|verify-ca)(?=(&|$))/gi, "$1verify-full");
+}
+
 function envFileCandidate(path: string): string {
   try {
     if (existsSync(path) && statSync(path).isDirectory()) return join(path, ".env");
@@ -28,10 +33,10 @@ function envFileCandidate(path: string): string {
 
 export function discoverDatabaseUrl(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): DatabaseDiscovery {
   const nexo = env.NEXO_DATABASE_URL?.trim();
-  if (nexo) return { url: nexo, source: "nexo-env" };
+  if (nexo) return { url: normalizeDatabaseSslMode(nexo), source: "nexo-env" };
 
   const generic = env.DATABASE_URL?.trim();
-  if (generic) return { url: generic, source: "database-env" };
+  if (generic) return { url: normalizeDatabaseSslMode(generic), source: "database-env" };
 
   const candidates: string[] = [];
   if (env.NEXO_SOL_ENV_PATH?.trim()) candidates.push(envFileCandidate(resolve(env.NEXO_SOL_ENV_PATH.trim())));
@@ -47,7 +52,7 @@ export function discoverDatabaseUrl(cwd = process.cwd(), env: NodeJS.ProcessEnv 
       if (!existsSync(path)) continue;
       const values = parseDotenv(readFileSync(path));
       const url = values.NEXO_DATABASE_URL?.trim() || values.DATABASE_URL?.trim();
-      if (url) return { url, source: "sol-env", sourcePath: path };
+      if (url) return { url: normalizeDatabaseSslMode(url), source: "sol-env", sourcePath: path };
     } catch (error) {
       console.warn(`[config] Could not inspect SOL environment at ${path}: ${error instanceof Error ? error.message : String(error)}`);
     }

@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { discoverDatabaseUrl } from "./config.js";
+import { discoverDatabaseUrl, normalizeDatabaseSslMode } from "./config.js";
 
 test("discovers DATABASE_URL from sibling SOL .env", async () => {
   const root = await mkdtemp(join(tmpdir(), "wa-nexo-config-"));
@@ -28,4 +28,15 @@ test("NEXO_DATABASE_URL has priority over inherited SOL configuration", async ()
   });
   assert.equal(result.url, "postgresql://nexo.example/test");
   assert.equal(result.source, "nexo-env");
+});
+
+test("legacy pg sslmode aliases are pinned to verify-full", () => {
+  assert.equal(
+    normalizeDatabaseSslMode("postgresql://user:pass@example/test?sslmode=require&channel_binding=require"),
+    "postgresql://user:pass@example/test?sslmode=verify-full&channel_binding=require",
+  );
+  assert.equal(
+    normalizeDatabaseSslMode("postgresql://example/test?sslmode=verify-full"),
+    "postgresql://example/test?sslmode=verify-full",
+  );
 });

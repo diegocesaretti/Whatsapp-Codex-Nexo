@@ -105,7 +105,12 @@ export function createBridgeServer(
         json(response, 200, { settings, codexWorkerStatus: codexWorker.status(), llmApiKeyConfigured: Boolean(await settingsStore.getLlmApiKey()), windowsAutostart, restartRecommended: false }); return;
       }
       if (request.method === "GET" && path === "/api/codex-worker/status") {
+        if (url.searchParams.get("refresh") === "1") await codexWorker.refreshCodexCli(true);
         json(response, 200, { status: codexWorker.status(), settings: (await settingsStore.get()).codexWorker }); return;
+      }
+      if (request.method === "POST" && path === "/api/codex-worker/rediscover") {
+        await codexWorker.refreshCodexCli(true);
+        json(response, 200, { status: codexWorker.status() }); return;
       }
       if (request.method === "POST" && path === "/api/llm/summarize") {
         const body = await readJson<{ query?: string; accountIds?: string[]; after?: string; before?: string; limit?: number; focus?: string }>(request);
