@@ -1,0 +1,40 @@
+name: Windows Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "electron/**"
+      - "src/**"
+      - "package.json"
+      - "tsconfig*.json"
+      - ".github/workflows/windows-desktop.yml"
+  pull_request:
+    paths:
+      - "electron/**"
+      - "src/**"
+      - "package.json"
+      - "tsconfig*.json"
+      - ".github/workflows/windows-desktop.yml"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: pnpm install
+      - run: pnpm test
+      - run: pnpm typecheck
+      - run: node --check electron/main.cjs
+      - run: pnpm desktop:dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Nexo-Windows-${{ github.sha }}
+          path: release/*.exe
+          if-no-files-found: error
+          retention-days: 14
