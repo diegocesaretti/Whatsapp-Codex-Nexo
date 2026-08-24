@@ -79,7 +79,6 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Nexo"
-    },
-    "artifactName": "${productName}-${version}-${arch}-${target}.${ext}"
+    }
   }
 }
