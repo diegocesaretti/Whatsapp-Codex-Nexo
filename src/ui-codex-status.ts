@@ -7,7 +7,7 @@ export function augmentCodexStatusUi(html: string): string {
 (()=>{
   let busy=false;
   const hx=v=>String(v==null?'':v).replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'}[ch]));
-  const sourceLabel=source=>({env:'NEXO_CODEX_PATH',path:'PATH de Windows','npm-global':'npm global','winget':'WinGet','scoop':'Scoop','local-bin':'~/.local/bin',unavailable:'no encontrado'}[source]||source||'desconocido');
+  const sourceLabel=source=>({env:'NEXO_CODEX_PATH',path:'PATH de Windows','npm-global':'npm global',winget:'WinGet',scoop:'Scoop','local-bin':'~/.local/bin',unavailable:'no encontrado'}[source]||source||'desconocido');
   async function sync(force){
     if(busy)return;busy=true;
     try{
@@ -18,6 +18,9 @@ export function augmentCodexStatusUi(html: string): string {
       const fields=refresh.closest('.fields');if(!fields)return;
       let slot=document.getElementById('codexCliState');
       if(!slot){slot=document.createElement('div');slot.id='codexCliState';fields.insertAdjacentElement('afterend',slot)}
+      const signature=JSON.stringify([Boolean(cli.available),cli.path||'',cli.source||'',cli.error||'']);
+      if(slot.dataset.signature===signature)return;
+      slot.dataset.signature=signature;
       slot.className='codex-cli-state small '+(cli.available?'good':'error');
       if(cli.available){
         slot.innerHTML='<strong>Codex CLI · encontrado</strong> <span class="muted">('+hx(sourceLabel(cli.source))+')</span><div class="codex-cli-path">'+hx(cli.path||'')+'</div><div class="muted" style="margin-top:5px">Nexo agrega esta carpeta al PATH del worker automáticamente. <button id="codexRediscover" style="padding:4px 8px;margin-left:6px">Detectar nuevamente</button></div>';
