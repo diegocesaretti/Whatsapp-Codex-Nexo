@@ -12,7 +12,8 @@ const BACKGROUND = process.argv.includes('--background');
 
 let mainWindow;
 let tray;
-let quitting = false;
+let quitRequested = false;
+let backendStopped = false;
 let backendOwned = false;
 let backendModule;
 let healthTimer;
@@ -139,6 +140,11 @@ function configurePackagedEnvironment() {
   if (legacyRoot) desktopConfig.legacyRoot = legacyRoot;
   desktopConfig.version = 1;
   writeDesktopConfig(desktopConfigPath, desktopConfig);
+
+  // Keep transitional Windows startup support working: the existing API resolves
+  // scripts/windows/nexo-tray.ps1 from cwd, and electron-builder places that
+  // compatibility shim under resources/scripts/windows.
+  process.chdir(process.resourcesPath);
 }
 
 function splashHtml(message = 'Iniciando Nexo…') {
@@ -163,13 +169,13 @@ function createMainWindow() {
     },
   });
 
-  mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(splashHtml())}`);
+  void mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(splashHtml())}`);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
   mainWindow.on('close', (event) => {
-    if (quitting) return;
+    if (quitRequested) return;
     event.preventDefault();
     mainWindow.hide();
   });
@@ -203,6 +209,12 @@ async function startEmbeddedBackend() {
   backendModule = await import(pathToFileURL(entry).href);
 }
 
+function requestQuit({ relaunch = false } = {}) {
+  if (relaunch) app.relaunch();
+  quitRequested = true;
+  app.quit();
+}
+
 async function createTray() {
   const icon = await app.getFileIcon(process.execPath, { size: 'small' });
   tray = new Tray(icon);
@@ -214,8 +226,8 @@ async function createTray() {
       { label: 'Abrir Nexo', click: () => showMainWindow() },
       { label: healthy ? 'Estado: conectado' : 'Estado: iniciando / reconectando', enabled: false },
       { type: 'separator' },
-      { label: 'Reiniciar Nexo', click: () => { app.relaunch(); quitting = true; app.exit(0); } },
-      { label: 'Salir', click: () => { quitting = true; app.quit(); } },
+      { label: 'Reiniciar Nexo', click: () => requestQuit({ relaunch: true }) },
+      { label: 'Salir', click: () => requestQuit() },
     ]));
   };
   tray.on('double-click', () => showMainWindow());
@@ -246,9 +258,9 @@ if (gotLock) {
   app.on('activate', () => showMainWindow());
   app.on('window-all-closed', () => undefined);
   app.on('before-quit', (event) => {
-    if (quitting || !backendOwned || !backendModule?.shutdownNexo) return;
+    if (backendStopped || !backendOwned || !backendModule?.shutdownNexo) return;
     event.preventDefault();
-    quitting = true;
+    backendStopped = true;
     if (healthTimer) clearInterval(healthTimer);
     Promise.resolve(backendModule.shutdownNexo('ELECTRON', false))
       .catch((error) => console.error('[desktop] graceful shutdown failed', error))
