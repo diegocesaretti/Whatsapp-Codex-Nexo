@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  REQUIRED_CODEX_WINDOWS_BUNDLE_FILES,
   codexAppxResourceCandidates,
   discoverDesktopCodexBundles,
   environmentForCodex,
@@ -12,23 +13,33 @@ import {
   windowsCodexCandidates,
 } from "./codex-cli.js";
 
-test("Windows Codex discovery includes the common npm global shim", () => {
+async function writeCompleteBundle(directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true });
+  for (const file of REQUIRED_CODEX_WINDOWS_BUNDLE_FILES) {
+    await writeFile(join(directory, file), file, "utf8");
+  }
+}
+
+test("Windows fallback candidates preserve npm, WinGet, Scoop and local-bin order", () => {
   const candidates = windowsCodexCandidates({
     APPDATA: "C:\\Users\\diego\\AppData\\Roaming",
     LOCALAPPDATA: "C:\\Users\\diego\\AppData\\Local",
     USERPROFILE: "C:\\Users\\diego",
   });
-  assert.ok(candidates.some((item) => item.source === "npm-global" && /AppData[\\/]Roaming[\\/]npm[\\/]codex\.cmd$/i.test(item.path)));
-  assert.ok(candidates.some((item) => item.source === "winget" && /WinGet[\\/]Links[\\/]codex\.exe$/i.test(item.path)));
+  const sources = candidates.map((item) => item.source);
+  assert.equal(sources[0], "npm-global");
+  assert.ok(sources.indexOf("winget") > sources.indexOf("npm-global"));
+  assert.ok(sources.indexOf("scoop") > sources.indexOf("winget"));
+  assert.ok(sources.indexOf("local-bin") > sources.indexOf("scoop"));
 });
 
-test("explicit NEXO_CODEX_PATH is the first Windows discovery candidate", () => {
+test("explicit NEXO_CODEX_PATH is the first declared Windows candidate", () => {
   const candidates = windowsCodexCandidates({
-    NEXO_CODEX_PATH: "C:\\Tools\\Codex\\codex.cmd",
+    NEXO_CODEX_PATH: "C:\\Tools\\Codex\\codex.exe",
     APPDATA: "C:\\Users\\diego\\AppData\\Roaming",
   });
   assert.equal(candidates[0]?.source, "env");
-  assert.match(candidates[0]?.path ?? "", /Codex[\\/]codex\.cmd$/i);
+  assert.match(candidates[0]?.path ?? "", /Codex[\\/]codex\.exe$/i);
 });
 
 test("resolved Codex directory is prepended to the child PATH", () => {
@@ -43,86 +54,94 @@ test("Microsoft Store package resource candidates do not hard-code the versioned
   const candidates = codexAppxResourceCandidates(installLocation);
   assert.match(candidates.cliPath, /OpenAI\.Codex_26\.818\.5345\.0_x64__2p2nqsd0c76g0[\\/]app[\\/]resources[\\/]codex\.exe$/i);
   assert.match(candidates.codeModeHostPath, /app[\\/]resources[\\/]codex-code-mode-host\.exe$/i);
+  assert.match(candidates.commandRunnerPath, /app[\\/]resources[\\/]codex-command-runner\.exe$/i);
+  assert.match(candidates.sandboxSetupPath, /app[\\/]resources[\\/]codex-windows-sandbox-setup\.exe$/i);
 });
 
-test("parses current and older OpenAI.Codex AppX package locations", () => {
-  const output = [
-    "26.818.5345.0\tOpenAI.Codex_26.818.5345.0_x64__2p2nqsd0c76g0\tC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.818.5345.0_x64__2p2nqsd0c76g0\tC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.818.5345.0_x64__2p2nqsd0c76g0\\app\\resources\\codex.exe\tC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.818.5345.0_x64__2p2nqsd0c76g0\\app\\resources\\codex-code-mode-host.exe\t\t",
-    "26.803.5235.0\tOpenAI.Codex_26.803.5235.0_x64__2p2nqsd0c76g0\tC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.5235.0_x64__2p2nqsd0c76g0\t\t\t\t",
-  ].join("\r\n");
+test("parses complete OpenAI.Codex AppX package locations", () => {
+  const root = "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.818.5345.0_x64__2p2nqsd0c76g0";
+  const resources = `${root}\\app\\resources`;
+  const output = `26.818.5345.0\tOpenAI.Codex_26.818.5345.0_x64__2p2nqsd0c76g0\t${root}\t${resources}\\codex.exe\t${resources}\\codex-code-mode-host.exe\t${resources}\\codex-windows-sandbox-setup.exe\t${resources}\\codex-command-runner.exe`;
   const packages = parseCodexAppxPackageLines(output);
-  assert.equal(packages.length, 2);
+  assert.equal(packages.length, 1);
   assert.equal(packages[0]?.version, "26.818.5345.0");
-  assert.match(packages[0]?.cliPath ?? "", /app[\\/]resources[\\/]codex\.exe$/i);
+  assert.match(packages[0]?.cliPath ?? "", /codex\.exe$/i);
   assert.match(packages[0]?.codeModeHostPath ?? "", /codex-code-mode-host\.exe$/i);
-  assert.equal(packages[1]?.cliPath, undefined);
+  assert.match(packages[0]?.commandRunnerPath ?? "", /codex-command-runner\.exe$/i);
+  assert.match(packages[0]?.sandboxSetupPath ?? "", /codex-windows-sandbox-setup\.exe$/i);
 });
 
-test("complete Codex Desktop bundle is preferred over an incomplete cached version", async () => {
+test("complete local Codex bundle is preferred over newer incomplete cached versions", async () => {
   const root = await mkdtemp(join(tmpdir(), "nexo-codex-bundle-"));
   try {
     const localAppData = join(root, "Local");
     const binRoot = join(localAppData, "OpenAI", "Codex", "bin");
-    const incomplete = join(binRoot, "oldhash");
-    const complete = join(binRoot, "newhash");
+    const incomplete = join(binRoot, "newer-incomplete");
+    const complete = join(binRoot, "d0097be4feba73d0");
     await mkdir(incomplete, { recursive: true });
-    await mkdir(complete, { recursive: true });
-    await writeFile(join(incomplete, "codex.exe"), "old", "utf8");
-    await writeFile(join(complete, "codex.exe"), "new", "utf8");
-    await writeFile(join(complete, "codex-code-mode-host.exe"), "host", "utf8");
+    await writeFile(join(incomplete, "codex.exe"), "cli", "utf8");
+    await writeFile(join(incomplete, "codex-code-mode-host.exe"), "host", "utf8");
+    await writeCompleteBundle(complete);
 
     const bundles = await discoverDesktopCodexBundles({ LOCALAPPDATA: localAppData });
     assert.equal(bundles.length, 2);
     assert.equal(bundles[0]?.complete, true);
-    assert.match(bundles[0]?.cliPath ?? "", /newhash[\\/]codex\.exe$/i);
-    assert.match(bundles[0]?.codeModeHostPath ?? "", /newhash[\\/]codex-code-mode-host\.exe$/i);
+    assert.match(bundles[0]?.directory ?? "", /d0097be4feba73d0$/i);
+    assert.deepEqual(bundles[0]?.missingFiles, []);
+    assert.equal(bundles[1]?.complete, false);
+    assert.ok(bundles[1]?.missingFiles.includes("codex-command-runner.exe"));
+    assert.ok(bundles[1]?.missingFiles.includes("codex-windows-sandbox-setup.exe"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("Codex plugin appserver bundle is discovered as a complete fallback", async () => {
-  const root = await mkdtemp(join(tmpdir(), "nexo-codex-plugin-"));
+test("bundle without code mode host is rejected as incomplete", async () => {
+  const root = await mkdtemp(join(tmpdir(), "nexo-codex-incomplete-"));
   try {
-    const plugin = join(root, ".codex", "plugins", ".plugin-appserver");
-    await mkdir(plugin, { recursive: true });
-    await writeFile(join(plugin, "codex.exe"), "cli", "utf8");
-    await writeFile(join(plugin, "codex-code-mode-host.exe"), "host", "utf8");
+    const bundle = join(root, "bundle");
+    await mkdir(bundle, { recursive: true });
+    await writeFile(join(bundle, "codex.exe"), "cli", "utf8");
+    await writeFile(join(bundle, "codex-command-runner.exe"), "runner", "utf8");
+    await writeFile(join(bundle, "codex-windows-sandbox-setup.exe"), "sandbox", "utf8");
+    const bundles = await discoverDesktopCodexBundles({ LOCALAPPDATA: join(root, "missing") });
+    assert.equal(bundles.length, 0);
 
-    const bundles = await discoverDesktopCodexBundles({ USERPROFILE: root });
-    assert.equal(bundles.length, 1);
-    assert.equal(bundles[0]?.complete, true);
-    assert.equal(bundles[0]?.directory, plugin);
+    const localAppData = join(root, "Local");
+    const cached = join(localAppData, "OpenAI", "Codex", "bin", "bundle");
+    await mkdir(cached, { recursive: true });
+    await writeFile(join(cached, "codex.exe"), "cli", "utf8");
+    await writeFile(join(cached, "codex-command-runner.exe"), "runner", "utf8");
+    await writeFile(join(cached, "codex-windows-sandbox-setup.exe"), "sandbox", "utf8");
+    const discovered = await discoverDesktopCodexBundles({ LOCALAPPDATA: localAppData });
+    assert.equal(discovered[0]?.complete, false);
+    assert.ok(discovered[0]?.missingFiles.includes("codex-code-mode-host.exe"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("desktop helper path is exported when it sits beside codex.exe", async () => {
+test("complete bundle exposes CLI and tools through the worker environment", async () => {
   const root = await mkdtemp(join(tmpdir(), "nexo-codex-env-"));
   try {
-    const cli = join(root, "codex.exe");
-    const host = join(root, "codex-code-mode-host.exe");
-    await writeFile(cli, "cli", "utf8");
-    await writeFile(host, "host", "utf8");
-    const env = environmentWithCodexPath(cli, { PATH: "base" });
-    assert.equal(env.CODEX_CODE_MODE_HOST_PATH, host);
+    await writeCompleteBundle(root);
+    const env = environmentForCodex({
+      available: true,
+      source: "desktop-app",
+      checkedAt: new Date(0).toISOString(),
+      path: join(root, "codex.exe"),
+      bundleDir: root,
+      codeModeHostPath: join(root, "codex-code-mode-host.exe"),
+      codeModeHostAvailable: true,
+      commandRunnerPath: join(root, "codex-command-runner.exe"),
+      commandRunnerAvailable: true,
+      sandboxSetupPath: join(root, "codex-windows-sandbox-setup.exe"),
+      sandboxSetupAvailable: true,
+      toolsAvailable: true,
+    }, { PATH: "base" });
+    assert.equal(env.CODEX_CODE_MODE_HOST_PATH, join(root, "codex-code-mode-host.exe"));
     assert.ok((env.PATH ?? env.Path ?? "").includes(root));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
-
-test("resolved AppX host path is exported even when it is not beside the CLI", () => {
-  const env = environmentForCodex({
-    available: true,
-    source: "msix-appx",
-    checkedAt: new Date(0).toISOString(),
-    path: "C:\\Program Files\\WindowsApps\\OpenAI.Codex_current\\app\\resources\\codex.exe",
-    codeModeHostPath: "C:\\Program Files\\WindowsApps\\OpenAI.Codex_current\\app\\native\\codex-code-mode-host.exe",
-    codeModeHostAvailable: true,
-    toolsAvailable: true,
-  }, { Path: "C:\\Windows\\System32" });
-  assert.match(env.CODEX_CLI_PATH ?? "", /codex\.exe$/i);
-  assert.match(env.CODEX_CODE_MODE_HOST_PATH ?? "", /codex-code-mode-host\.exe$/i);
 });

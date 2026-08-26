@@ -122,13 +122,13 @@ function executeCodex(
     const imagePaths = [...new Set(options.imagePaths ?? [])].slice(0, 8);
     const imageArgs = imagePaths.flatMap((path) => ["--image", path]);
     const directArgs = validThread
-      ? ["exec", "resume", validThread, ...imageArgs, "--json", "--color", "never", "--skip-git-repo-check", "-"]
-      : ["exec", ...imageArgs, "--json", "--color", "never", "--skip-git-repo-check", "-"];
+      ? ["exec", "resume", validThread, ...imageArgs, "--json", "--skip-git-repo-check", "-"]
+      : ["exec", ...imageArgs, "--json", "--skip-git-repo-check", "-"];
     const command = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : options.cliPath;
     const resume = validThread ? ` resume ${validThread}` : "";
     const winImages = imagePaths.map((path) => ` --image ${windowsQuote(path)}`).join("");
     const args = process.platform === "win32"
-      ? ["/d", "/s", "/c", `codex exec${resume}${winImages} --json --color never --skip-git-repo-check -`]
+      ? ["/d", "/s", "/c", `codex exec${resume}${winImages} --json --skip-git-repo-check -`]
       : directArgs;
 
     const child = spawn(command, args, {
