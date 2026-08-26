@@ -2,6 +2,7 @@ import { augmentCodexStatusUi } from "./ui-codex-status.js";
 import { augmentIdentityUi } from "./ui-identities.js";
 import { renderAdminPage as renderV4 } from "./ui-v4.js";
 
+// CI validation marker for the Nexo 0.7.3 Windows package.
 export function renderAdminPage(): string {
   const base = renderV4()
     .replace("CODEX NEXO · WHATSAPP · v0.4", "CODEX NEXO · WINDOWS · v0.7.3")
