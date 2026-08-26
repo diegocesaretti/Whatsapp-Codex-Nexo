@@ -4,7 +4,7 @@ import { renderAdminPage as renderV4 } from "./ui-v4.js";
 
 export function renderAdminPage(): string {
   const base = renderV4()
-    .replace("CODEX NEXO · WHATSAPP · v0.4", "CODEX NEXO · WINDOWS · v0.7.2")
+    .replace("CODEX NEXO · WHATSAPP · v0.4", "CODEX NEXO · WINDOWS · v0.7.3")
     .replace(
       "Varias cuentas INPUT observadas, una cuenta OUTPUT para Codex y una Conversación bidireccional con Codex que puede responder automáticamente mediante el worker residente.",
       "Nexo puede ejecutarse como aplicación de Windows o daemon local. Mantiene múltiples INPUT observados, una cuenta OUTPUT para Codex y conversación bidireccional con identidades humanas.",

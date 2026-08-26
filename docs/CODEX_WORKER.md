@@ -1,6 +1,6 @@
 # Resident Codex WhatsApp worker
 
-Nexo v0.4 can turn the authorized OUTPUT conversation into a resident remote interface for the locally authenticated Codex CLI.
+Nexo v0.7.3 can turn the authorized OUTPUT conversation into a resident remote interface for the locally authenticated Codex CLI.
 
 ## Flow
 
@@ -16,11 +16,11 @@ authorized direct WhatsApp message
   -> Nexo sends reply to the exact authorized peer
 ```
 
-The worker is part of the Nexo daemon. It does not require a separate terminal once Nexo is running from `pnpm start`, `pnpm dev`, or the Windows tray launcher.
+The worker is part of the Nexo daemon. It does not require a separate terminal once Nexo is running from `pnpm start`, `pnpm dev`, or the Windows desktop app.
 
 ## Authentication
 
-The worker does **not** use an OpenAI API key. It launches the locally installed `codex` CLI under the same Windows/user account as Nexo, so Codex uses the existing login/session and the normal `~/.codex/config.toml` configuration.
+The worker does **not** use an OpenAI API key. It launches the locally installed/authenticated Codex CLI under the same Windows/user account as Nexo, so Codex uses the existing login/session and the normal `~/.codex/config.toml` configuration.
 
 Run this once in a terminal if the machine has never authenticated Codex:
 
@@ -29,6 +29,34 @@ codex login
 ```
 
 The Nexo MCP should remain configured in Codex so a WhatsApp turn can search/summarize INPUT WhatsApp when needed.
+
+## Windows Codex Desktop bundles
+
+The official Codex Windows app keeps per-version native binaries in paths such as:
+
+```text
+%LOCALAPPDATA%\OpenAI\Codex\bin\<version-hash>\codex.exe
+%LOCALAPPDATA%\OpenAI\Codex\bin\<version-hash>\codex-code-mode-host.exe
+```
+
+Some builds also expose an app-server plugin bundle at:
+
+```text
+%USERPROFILE%\.codex\plugins\.plugin-appserver\
+```
+
+Nexo scans both locations and prefers a **complete bundle** containing both `codex.exe` and `codex-code-mode-host.exe`. It does not hard-code the version hash because that directory changes when Codex updates.
+
+When a complete native bundle is selected, the worker prepends its directory to its child PATH and exports:
+
+```text
+CODEX_CLI_PATH=<selected codex.exe>
+CODEX_CODE_MODE_HOST_PATH=<matching codex-code-mode-host.exe>
+```
+
+This matters because a standalone `codex.exe` can still answer normal text while local Code Mode/tool calls fail if its matching host executable cannot be resolved. The admin UI shows both resolved paths.
+
+`NEXO_CODEX_PATH` remains supported as an explicit override. If it points into an incomplete stale Codex Desktop cache directory, Nexo is allowed to select a newer complete official bundle instead.
 
 ## Conversation continuity
 
@@ -68,7 +96,7 @@ The worker defaults to enabled, but it still does nothing unless the OUTPUT conv
 
 ## Diagnostics
 
-The admin UI shows worker state, session count, last success and last error. The same information is available through:
+The admin UI shows worker state, session count, last success, last error, selected Codex CLI and Code Mode host. The same information is available through:
 
 ```text
 GET /api/codex-worker/status
@@ -82,7 +110,8 @@ get_codex_whatsapp_worker_status
 
 Typical failures:
 
-- `Could not start Codex CLI`: Codex is not installed or not on PATH for the Windows account running Nexo;
+- `Codex CLI no encontrado`: no usable Codex installation was discovered for the Windows account running Nexo;
+- `bundle incompleto` / missing `codex-code-mode-host.exe`: the selected Codex Desktop cache only contains the CLI; update/restart Codex and use **Detectar nuevamente** so Nexo can select another complete bundle;
 - authentication/login error: run `codex login` under that same account;
 - timeout: increase the worker timeout, or reduce the work requested in one WhatsApp turn;
-- MCP unavailable inside Codex: verify the global Codex MCP configuration still points to the local Nexo project.
+- MCP unavailable inside Codex: first verify that the UI reports both Codex CLI and Code Mode host as ready, then verify the global Codex MCP configuration still points to Nexo.
