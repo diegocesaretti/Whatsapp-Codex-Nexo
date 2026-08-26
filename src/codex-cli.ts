@@ -18,8 +18,8 @@ export interface CodexCliStatus {
   error?: string;
   bundleDir?: string;
   codeModeHostPath?: string;
-  codeModeHostAvailable: boolean;
-  toolsAvailable: boolean;
+  codeModeHostAvailable?: boolean;
+  toolsAvailable?: boolean;
 }
 
 export interface CodexDesktopBundle {
@@ -228,7 +228,6 @@ export async function resolveCodexCli(force = false): Promise<CodexCliStatus> {
         cache = { expiresAt: now + CACHE_MS, value: inspected };
         return inspected;
       }
-      // A stale/incomplete explicit desktop cache path should not pin Nexo to a broken bundle.
       const desktop = await bestDesktopBundle();
       if (desktop?.complete) {
         const value = await inspectCli(desktop.cliPath, "desktop-app", checkedAt);
@@ -301,7 +300,6 @@ function prependPath(directory: string, env: NodeJS.ProcessEnv): NodeJS.ProcessE
 export function environmentForCodex(cli: CodexCliStatus, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   if (!cli.path) return { ...env };
   const result = prependPath(dirname(cli.path), env);
-  // Native Windows paths are safe for nested Codex helpers. Avoid advertising .cmd/.bat wrappers as CODEX_CLI_PATH.
   if (process.platform !== "win32" || /\.exe$/i.test(cli.path)) result.CODEX_CLI_PATH = cli.path;
   if (cli.codeModeHostPath) result.CODEX_CODE_MODE_HOST_PATH = cli.codeModeHostPath;
   return result;
