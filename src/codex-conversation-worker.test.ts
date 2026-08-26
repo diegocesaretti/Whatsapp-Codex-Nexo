@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { AttachmentInbox, type InboxAttachment } from "./attachment-inbox.js";
 import { buildCodexWhatsappPrompt, parseCodexJsonl } from "./codex-conversation-worker.js";
@@ -26,6 +27,12 @@ test("parseCodexJsonl extracts thread id and last agent message", () => {
   ].join("\n"));
   assert.equal(parsed.threadId, "019f-test-thread");
   assert.equal(parsed.answer, "final answer");
+});
+
+test("Codex worker never passes the unsupported --color flag", async () => {
+  const source = await readFile(new URL("./codex-conversation-worker.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /--color/);
+  assert.match(source, /--json --skip-git-repo-check -/);
 });
 
 test("worker prompt marks new allowlisted WhatsApp text as authenticated human input", () => {
