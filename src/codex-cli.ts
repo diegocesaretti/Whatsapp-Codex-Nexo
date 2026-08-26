@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { access, readdir, stat } from "node:fs/promises";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -89,49 +89,71 @@ export function codexDesktopBinRoot(env: NodeJS.ProcessEnv = process.env): strin
   return localAppData ? resolve(localAppData, "OpenAI", "Codex", "bin") : undefined;
 }
 
+export function codexPluginAppserverRoot(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const userProfile = env.USERPROFILE?.trim();
+  return userProfile ? resolve(userProfile, ".codex", "plugins", ".plugin-appserver") : undefined;
+}
+
+async function inspectBundleDirectory(directory: string): Promise<CodexDesktopBundle | undefined> {
+  const cliPath = await existingFile(join(directory, "codex.exe"));
+  if (!cliPath) return undefined;
+  const codeModeHostPath = await existingFile(join(directory, "codex-code-mode-host.exe"));
+  const sandboxSetupPath = await existingFile(join(directory, "codex-windows-sandbox-setup.exe"));
+  const commandRunnerPath = await existingFile(join(directory, "codex-command-runner.exe"));
+  const modifiedAtMs = await stat(cliPath).then((info) => info.mtimeMs).catch(() => 0);
+  return {
+    directory: resolve(directory),
+    cliPath,
+    codeModeHostPath,
+    sandboxSetupPath,
+    commandRunnerPath,
+    complete: Boolean(codeModeHostPath),
+    modifiedAtMs,
+  };
+}
+
 export async function discoverDesktopCodexBundles(env: NodeJS.ProcessEnv = process.env): Promise<CodexDesktopBundle[]> {
-  const root = codexDesktopBinRoot(env);
-  if (!root) return [];
-  let entries: Awaited<ReturnType<typeof readdir>>;
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
   const bundles: CodexDesktopBundle[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const directory = resolve(root, entry.name);
-    const cliPath = await existingFile(join(directory, "codex.exe"));
-    if (!cliPath) continue;
-    const codeModeHostPath = await existingFile(join(directory, "codex-code-mode-host.exe"));
-    const sandboxSetupPath = await existingFile(join(directory, "codex-windows-sandbox-setup.exe"));
-    const commandRunnerPath = await existingFile(join(directory, "codex-command-runner.exe"));
-    const modifiedAtMs = await stat(cliPath).then((info) => info.mtimeMs).catch(() => 0);
-    bundles.push({
-      directory,
-      cliPath,
-      codeModeHostPath,
-      sandboxSetupPath,
-      commandRunnerPath,
-      complete: Boolean(codeModeHostPath),
-      modifiedAtMs,
-    });
+  const root = codexDesktopBinRoot(env);
+  if (root) {
+    try {
+      const entries = await readdir(root, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const bundle = await inspectBundleDirectory(resolve(root, entry.name));
+        if (bundle) bundles.push(bundle);
+      }
+    } catch {}
   }
 
-  return bundles.sort((left, right) => {
-    if (left.complete !== right.complete) return left.complete ? -1 : 1;
-    return right.modifiedAtMs - left.modifiedAtMs;
-  });
+  const pluginRoot = codexPluginAppserverRoot(env);
+  if (pluginRoot) {
+    const pluginBundle = await inspectBundleDirectory(pluginRoot);
+    if (pluginBundle) bundles.push(pluginBundle);
+  }
+
+  const seen = new Set<string>();
+  return bundles
+    .filter((bundle) => {
+      const key = bundle.directory.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) => {
+      if (left.complete !== right.complete) return left.complete ? -1 : 1;
+      return right.modifiedAtMs - left.modifiedAtMs;
+    });
 }
 
 function isDesktopCachedCli(cliPath: string, env: NodeJS.ProcessEnv = process.env): boolean {
-  const root = codexDesktopBinRoot(env);
-  if (!root) return false;
-  const normalizedRoot = `${resolve(root).toLowerCase()}\\`;
   const normalizedPath = resolve(cliPath).toLowerCase();
-  return normalizedPath.startsWith(normalizedRoot) || normalizedPath.startsWith(`${resolve(root).toLowerCase()}/`);
+  for (const root of [codexDesktopBinRoot(env), codexPluginAppserverRoot(env)]) {
+    if (!root) continue;
+    const normalizedRoot = resolve(root).toLowerCase();
+    if (normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}\\`) || normalizedPath.startsWith(`${normalizedRoot}/`)) return true;
+  }
+  return false;
 }
 
 async function existingExecutable(candidate: string): Promise<string | undefined> {
@@ -161,7 +183,7 @@ async function inspectCli(cliPath: string, source: CodexCliSource, checkedAt: st
   const codeModeHostAvailable = Boolean(codeModeHostPath);
   const toolsAvailable = desktopCached ? codeModeHostAvailable : true;
   return {
-    available: true,
+    available: desktopCached ? codeModeHostAvailable : true,
     path,
     source,
     checkedAt,
@@ -247,7 +269,7 @@ export async function resolveCodexCli(force = false): Promise<CodexCliStatus> {
   const error = explicit
     ? `NEXO_CODEX_PATH no existe o no apunta a Codex: ${explicit}`
     : process.platform === "win32"
-      ? "Codex CLI no fue encontrado en la app de Codex, PATH, %APPDATA%\\npm, WinGet, Scoop ni ~/.local/bin"
+      ? "Codex CLI no fue encontrado en los bundles de la app de Codex, PATH, %APPDATA%\\npm, WinGet, Scoop ni ~/.local/bin"
       : "Codex CLI no fue encontrado en PATH";
   const value: CodexCliStatus = {
     available: false,
@@ -287,14 +309,12 @@ export function environmentForCodex(cli: CodexCliStatus, env: NodeJS.ProcessEnv 
 
 export function environmentWithCodexPath(cliPath: string | undefined, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   if (!cliPath) return { ...env };
-  return environmentForCodex({
-    available: true,
-    path: cliPath,
-    source: "path",
-    checkedAt: new Date(0).toISOString(),
-    codeModeHostAvailable: false,
-    toolsAvailable: true,
-  }, env);
+  const directory = dirname(cliPath);
+  const result = prependPath(directory, env);
+  if (process.platform !== "win32" || /\.exe$/i.test(cliPath)) result.CODEX_CLI_PATH = cliPath;
+  const siblingHost = join(directory, "codex-code-mode-host.exe");
+  if (existsSync(siblingHost)) result.CODEX_CODE_MODE_HOST_PATH = siblingHost;
+  return result;
 }
 
 export function resetCodexCliCacheForTests(): void {
