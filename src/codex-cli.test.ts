@@ -4,8 +4,11 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  codexAppxResourceCandidates,
   discoverDesktopCodexBundles,
+  environmentForCodex,
   environmentWithCodexPath,
+  parseCodexAppxPackageLines,
   windowsCodexCandidates,
 } from "./codex-cli.js";
 
@@ -33,6 +36,26 @@ test("resolved Codex directory is prepended to the child PATH", () => {
   const pathValue = env.PATH ?? env.Path ?? "";
   assert.ok(pathValue.includes("/opt/codex/bin"));
   assert.ok(pathValue.includes("/usr/bin"));
+});
+
+test("Microsoft Store package resource candidates do not hard-code the versioned WindowsApps folder", () => {
+  const installLocation = "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.818.5345.0_x64__2p2nqsd0c76g0";
+  const candidates = codexAppxResourceCandidates(installLocation);
+  assert.match(candidates.cliPath, /OpenAI\.Codex_26\.818\.5345\.0_x64__2p2nqsd0c76g0[\\/]app[\\/]resources[\\/]codex\.exe$/i);
+  assert.match(candidates.codeModeHostPath, /app[\\/]resources[\\/]codex-code-mode-host\.exe$/i);
+});
+
+test("parses current and older OpenAI.Codex AppX package locations", () => {
+  const output = [
+    "26.818.5345.0\tOpenAI.Codex_26.818.5345.0_x64__2p2nqsd0c76g0\tC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.818.5345.0_x64__2p2nqsd0c76g0\tC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.818.5345.0_x64__2p2nqsd0c76g0\\app\\resources\\codex.exe\tC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.818.5345.0_x64__2p2nqsd0c76g0\\app\\resources\\codex-code-mode-host.exe\t\t",
+    "26.803.5235.0\tOpenAI.Codex_26.803.5235.0_x64__2p2nqsd0c76g0\tC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.5235.0_x64__2p2nqsd0c76g0\t\t\t\t",
+  ].join("\r\n");
+  const packages = parseCodexAppxPackageLines(output);
+  assert.equal(packages.length, 2);
+  assert.equal(packages[0]?.version, "26.818.5345.0");
+  assert.match(packages[0]?.cliPath ?? "", /app[\\/]resources[\\/]codex\.exe$/i);
+  assert.match(packages[0]?.codeModeHostPath ?? "", /codex-code-mode-host\.exe$/i);
+  assert.equal(packages[1]?.cliPath, undefined);
 });
 
 test("complete Codex Desktop bundle is preferred over an incomplete cached version", async () => {
@@ -88,4 +111,18 @@ test("desktop helper path is exported when it sits beside codex.exe", async () =
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("resolved AppX host path is exported even when it is not beside the CLI", () => {
+  const env = environmentForCodex({
+    available: true,
+    source: "msix-appx",
+    checkedAt: new Date(0).toISOString(),
+    path: "C:\\Program Files\\WindowsApps\\OpenAI.Codex_current\\app\\resources\\codex.exe",
+    codeModeHostPath: "C:\\Program Files\\WindowsApps\\OpenAI.Codex_current\\app\\native\\codex-code-mode-host.exe",
+    codeModeHostAvailable: true,
+    toolsAvailable: true,
+  }, { Path: "C:\\Windows\\System32" });
+  assert.match(env.CODEX_CLI_PATH ?? "", /codex\.exe$/i);
+  assert.match(env.CODEX_CODE_MODE_HOST_PATH ?? "", /codex-code-mode-host\.exe$/i);
 });
