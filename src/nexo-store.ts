@@ -9,6 +9,8 @@ export interface ChatNameEntry {
   name?: string | null;
 }
 
+export type InputArchiveResult = "stored" | "duplicate" | "rejected";
+
 export function dedupeChatNameEntries(entries: ChatNameEntry[]): ChatNameEntry[] {
   const byJid = new Map<string, string>();
   for (const entry of entries) {
@@ -59,14 +61,18 @@ export class NexoBridgeStore extends BridgeStore {
     return super.updateChatNames(accountId, dedupeChatNameEntries(entries));
   }
 
-  override async appendMessage(message: StoredMessage): Promise<boolean> {
+  async appendInputMessage(message: StoredMessage): Promise<InputArchiveResult> {
     const account = await super.getAccount(message.accountId);
     if (!account || account.role !== "input") {
       throw new Error("Only INPUT accounts may be written to the searchable WhatsApp archive");
     }
     const outputPhone = await this.outputPhone();
-    if (isCodexControlMirrorMessage(message, outputPhone)) return false;
-    return super.appendMessage(message);
+    if (isCodexControlMirrorMessage(message, outputPhone)) return "rejected";
+    return await super.appendMessage(message) ? "stored" : "duplicate";
+  }
+
+  override async appendMessage(message: StoredMessage): Promise<boolean> {
+    return await this.appendInputMessage(message) === "stored";
   }
 
   override async getMessage(id: string): Promise<StoredMessage | undefined> {
