@@ -76,15 +76,5 @@ await patch("package.json", [
   ['  "version": "0.7.5",', '  "version": "0.8.0",'],
 ]);
 
-await patch(".github/workflows/ci.yml", [
-  [
-    "      - run: pnpm typecheck\n",
-    "      - run: pnpm typecheck\n      - run: pnpm build\n      - name: Verify SOL plugin package can be assembled\n        run: |\n          rm -rf .solplugin-stage Nexo.solplugin\n          mkdir -p .solplugin-stage\n          cp package.json sol-plugin.json .solplugin-stage/\n          cp -R dist .solplugin-stage/dist\n          cd .solplugin-stage\n          npm install --omit=dev --ignore-scripts --no-package-lock\n          zip -qry ../Nexo.solplugin .\n          cd ..\n          test -s Nexo.solplugin\n",
-  ],
-]);
-
-await writeFile(".github/workflows/sol-plugin-release.yml", `name: SOL Plugin Release\n\non:\n  push:\n    branches: [main]\n    paths:\n      - src/**\n      - package.json\n      - sol-plugin.json\n      - .github/workflows/sol-plugin-release.yml\n  workflow_dispatch:\n\npermissions:\n  contents: write\n\njobs:\n  package:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 22\n      - run: corepack enable\n      - run: pnpm install\n      - run: pnpm test\n      - run: pnpm typecheck\n      - run: pnpm build\n      - name: Build Nexo.solplugin\n        run: |\n          rm -rf .solplugin-stage Nexo.solplugin\n          mkdir -p .solplugin-stage\n          cp package.json sol-plugin.json .solplugin-stage/\n          cp -R dist .solplugin-stage/dist\n          cd .solplugin-stage\n          npm install --omit=dev --ignore-scripts --no-package-lock\n          zip -qry ../Nexo.solplugin .\n          cd ..\n      - uses: actions/upload-artifact@v4\n        with:\n          name: Nexo.solplugin\n          path: Nexo.solplugin\n      - name: Publish rolling SOL plugin release\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: |\n          gh release delete sol-plugin-latest -y --cleanup-tag || true\n          gh release create sol-plugin-latest Nexo.solplugin --target \"$GITHUB_SHA\" --title \"Nexo · WhatsApp SOL plugin\" --notes \"Rolling SOL plugin package built from main.\"\n`, "utf8");
-
 await rm("scripts/apply-sol-input-plugin.mjs", { force: true });
-await rm(".github/workflows/apply-sol-input-plugin.yml", { force: true });
 console.log("Nexo SOL input plugin integration applied");
