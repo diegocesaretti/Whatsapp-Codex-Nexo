@@ -20,22 +20,77 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - run: corepack enable
       - run: pnpm install
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm build
-      - name: Build Nexo.solplugin
+      - name: Build bundled Nexo.solplugin
+        shell: bash
         run: |
+          set -euo pipefail
           rm -rf .solplugin-stage Nexo.solplugin
-          mkdir -p .solplugin-stage
-          cp package.json sol-plugin.json .solplugin-stage/
-          cp -R dist .solplugin-stage/dist
+          mkdir -p .solplugin-stage/dist
+
+          # Bundle the complete runtime instead of shipping node_modules. SOL deliberately
+          # caps ZIP entries to defend against abusive packages, so a plugin distribution
+          # must stay compact and self-contained. createRequire keeps CommonJS dependencies
+          # compatible inside the ESM bundle when they dynamically require Node built-ins.
+          npx --yes esbuild@0.25.9 dist/index.js \
+            --bundle \
+            --platform=node \
+            --format=esm \
+            --target=node24 \
+            --packages=bundle \
+            --banner:js='import { createRequire as __solCreateRequire } from "node:module"; const require = __solCreateRequire(import.meta.url);' \
+            --outfile=.solplugin-stage/dist/index.js
+
+          cp sol-plugin.json .solplugin-stage/sol-plugin.json
+          node -e 'const p=require("./package.json"); require("fs").writeFileSync(".solplugin-stage/package.json", JSON.stringify({name:"nexo-solplugin-runtime",version:p.version,private:true,type:"module"}, null, 2)+"\n")'
+
+          node --check .solplugin-stage/dist/index.js
+
+          # Syntax alone did not catch the previous ESM/CommonJS failure. Start the actual
+          # bundled entry under the same Node major used by SOL and require it to stay alive.
+          smoke_dir="$(mktemp -d)"
+          smoke_log="$(mktemp)"
+          SOL_PLUGIN_TOKEN=smoke-token \
+          SOL_PLUGIN_API_URL=http://127.0.0.1:9 \
+          SOL_PLUGIN_DATA_DIR="$smoke_dir" \
+          NEXO_WHATSAPP_PORT=0 \
+          node .solplugin-stage/dist/index.js >"$smoke_log" 2>&1 &
+          smoke_pid=$!
+          smoke_ok=0
+          for _ in $(seq 1 24); do
+            if grep -q "WhatsApp Codex Nexo listening" "$smoke_log"; then
+              smoke_ok=1
+              break
+            fi
+            if ! kill -0 "$smoke_pid" 2>/dev/null; then
+              cat "$smoke_log"
+              wait "$smoke_pid" || true
+              echo "Bundled plugin exited during startup smoke test" >&2
+              exit 1
+            fi
+            sleep 0.25
+          done
+          kill "$smoke_pid" 2>/dev/null || true
+          wait "$smoke_pid" 2>/dev/null || true
+          cat "$smoke_log"
+          test "$smoke_ok" -eq 1
+          ! grep -q 'Dynamic require of' "$smoke_log"
+          rm -rf "$smoke_dir" "$smoke_log"
+
           cd .solplugin-stage
-          npm install --omit=dev --ignore-scripts --no-package-lock
           zip -qry ../Nexo.solplugin .
           cd ..
+
+          entries=$(unzip -Z1 Nexo.solplugin | wc -l | tr -d ' ')
+          bytes=$(unzip -l Nexo.solplugin | awk 'END {print $1}')
+          echo "Nexo.solplugin entries=$entries uncompressed_bytes=$bytes"
+          test "$entries" -le 2000
+          test "$bytes" -le $((128 * 1024 * 1024))
       - name: Publish rolling SOL plugin release
         env:
           GH_TOKEN: ${{ github.token }}

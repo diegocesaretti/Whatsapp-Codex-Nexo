@@ -1,4 +1,5 @@
 import { AttachmentInbox } from "./attachment-inbox.js";
+import { preferOfficialCodexCliOnWindows } from "./codex-cli-preference.js";
 import { CodexConversationWorker } from "./codex-conversation-worker.js";
 import { config } from "./config.js";
 import { WhatsappSummarizer } from "./llm.js";
@@ -9,6 +10,8 @@ import { createBridgeServer } from "./server.js";
 import { AppSettingsStore } from "./settings.js";
 import { retryTransientStartup } from "./startup-retry.js";
 import { SolPluginClient } from "./sol-plugin-client.js";
+import { startSolToolCallbackServer } from "./sol-tool-server.js";
+import { nexoSolTools } from "./sol-tools.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 
 const settingsStore = new AppSettingsStore(config.dataDir);
@@ -23,7 +26,14 @@ settings = await settingsStore.get();
 await attachmentInbox.init();
 await attachmentInbox.cleanup(settings.multimodal.retentionDays).catch(() => undefined);
 
+const preferredCodexCli = await preferOfficialCodexCliOnWindows().catch((error) => {
+  console.warn(`[codex] official CLI discovery failed: ${error instanceof Error ? error.message : String(error)}`);
+  return undefined;
+});
+if (preferredCodexCli) console.log(`[codex] preferred CLI: ${preferredCodexCli}`);
+
 const solPlugin = new SolPluginClient();
+await solPlugin.start();
 const manager = new WhatsappManager(store, settingsStore, conversationStore, solPlugin);
 installMultimodalCapture(manager, settingsStore, attachmentInbox);
 if (settings.autoConnectLinkedAccounts) await manager.startLinkedAccounts();
@@ -31,6 +41,8 @@ if (settings.autoConnectLinkedAccounts) await manager.startLinkedAccounts();
 const summarizer = new WhatsappSummarizer(store, settingsStore);
 const codexWorker = new CodexConversationWorker(config.dataDir, settingsStore, conversationStore, manager, attachmentInbox);
 const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore, codexWorker);
+let solToolServer: Awaited<ReturnType<typeof startSolToolCallbackServer>>["server"] | undefined;
+
 server.listen(config.port, config.host, () => {
   console.log(`WhatsApp Codex Nexo listening on http://${config.host}:${config.port}`);
   console.log(`Storage: ${store.storageMode}${store.storageMode === "neon" ? ` (schema whatsapp_nexo · source ${config.databaseSource})` : " (.data local)"}`);
@@ -39,7 +51,28 @@ server.listen(config.port, config.host, () => {
   console.log(`Codex resident worker: ${settings.codexWorker.enabled ? "enabled" : "disabled"}`);
   console.log(`Multimodal inbox: ${settings.multimodal.enabled ? `enabled · max ${settings.multimodal.maxFileMb} MB · retention ${settings.multimodal.retentionDays}d` : "disabled"}`);
   console.log("Multiple INPUT accounts are read-only; OUTPUT conversation replies and media are isolated from the searchable INPUT archive.");
-  solPlugin.reportReady({ bridgeUrl: `http://${config.host}:${config.port}`, storage: store.storageMode, mode: "whatsapp" });
+
+  void (async () => {
+    let toolBaseUrl: string | undefined;
+    if (solPlugin.enabled) {
+      const runtime = await startSolToolCallbackServer();
+      solToolServer = runtime.server;
+      toolBaseUrl = runtime.baseUrl;
+      await solPlugin.registerTools(runtime.baseUrl, nexoSolTools);
+    }
+    solPlugin.reportReady({
+      bridgeUrl: `http://${config.host}:${config.port}`,
+      toolBaseUrl,
+      registeredTools: solPlugin.enabled ? nexoSolTools.length : 0,
+      storage: store.storageMode,
+      mode: "whatsapp",
+      mcp: solPlugin.enabled ? "delegated-to-sol" : "standalone-available",
+    });
+  })().catch((error) => {
+    solPlugin.reportHealth("degraded", { toolRegistrationError: error instanceof Error ? error.message : String(error) });
+    console.error("Failed to register Nexo tools in SOL", error);
+  });
+
   void codexWorker.start().catch((error) => console.error("Failed to start Codex worker", error));
 });
 
@@ -49,8 +82,10 @@ export async function shutdownNexo(signal: string, exitProcess = true): Promise<
   stopping = true;
   console.log(`\n${signal}: stopping Nexo...`);
   server.close();
+  solToolServer?.close();
   await codexWorker.stop().catch((error) => console.error("Failed to stop Codex worker", error));
   await manager.stopAll().catch((error) => console.error("Failed to stop WhatsApp sessions", error));
+  await solPlugin.stop().catch((error) => console.error("Failed to stop SOL plugin client", error));
   await Promise.all([
     store.close().catch((error) => console.error("Failed to close storage", error)),
     conversationStore.close().catch((error) => console.error("Failed to close output conversation storage", error)),

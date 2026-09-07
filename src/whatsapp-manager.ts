@@ -10,11 +10,11 @@ import makeWASocket, {
 import pino from "pino";
 import * as QRCode from "qrcode";
 import { randomUUID } from "node:crypto";
+import { NexoBridgeStore } from "./nexo-store.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { isAuthorizedPhone, phoneNumberFromJid, safePhoneJid } from "./output-conversation-auth.js";
 import { AppSettingsStore } from "./settings.js";
 import { SolPluginClient } from "./sol-plugin-client.js";
-import { BridgeStore } from "./store.js";
 import {
   detectWhatsappMessageType,
   extractWhatsappText,
@@ -152,7 +152,7 @@ export class WhatsappManager {
   private readonly sessions = new Map<string, RuntimeSession>();
 
   constructor(
-    private readonly store: BridgeStore,
+    private readonly store: NexoBridgeStore,
     private readonly settingsStore?: AppSettingsStore,
     private readonly conversationStore?: OutputConversationStore,
     private readonly solPlugin?: SolPluginClient,
@@ -589,17 +589,21 @@ export class WhatsappManager {
       occurredAt: whatsappTimestamp(message.messageTimestamp).toISOString(),
       origin,
     };
-    if (await this.store.appendMessage(stored)) {
+    const archiveResult = await this.store.appendInputMessage(stored);
+    if (archiveResult === "rejected") return;
+
+    if (archiveResult === "stored") {
       runtime.storedMessages += 1;
       runtime.updatedAt = new Date();
     }
+
     if (this.solPlugin) {
       const sourceAccount = { ...account, phoneJid: account.phoneJid ?? runtime.phoneJid };
       await this.solPlugin.ingestWhatsappMessage(sourceAccount, stored).catch((error) => {
-        runtime.lastError = `SOL ingestion: ${error instanceof Error ? error.message : String(error)}`;
+        runtime.lastError = `SOL outbox: ${error instanceof Error ? error.message : String(error)}`;
         runtime.updatedAt = new Date();
         this.solPlugin?.reportHealth("degraded", { accountId: account.id, reason: runtime.lastError });
-        this.solPlugin?.log("warn", `SOL ingestion failed for ${account.label}: ${runtime.lastError}`);
+        this.solPlugin?.log("warn", `Could not persist SOL ingestion outbox for ${account.label}: ${runtime.lastError}`);
       });
     }
   }
