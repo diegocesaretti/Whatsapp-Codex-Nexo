@@ -36,13 +36,15 @@ jobs:
           npm install --omit=dev --ignore-scripts --no-package-lock
           zip -qry ../Nexo.solplugin .
           cd ..
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Nexo.solplugin
-          path: Nexo.solplugin
       - name: Publish rolling SOL plugin release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete sol-plugin-latest -y --cleanup-tag || true
           gh release create sol-plugin-latest Nexo.solplugin --target "$GITHUB_SHA" --title "Nexo · WhatsApp SOL plugin" --notes "Rolling SOL plugin package built from main."
+      - name: Upload optional Actions artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nexo.solplugin
+          path: Nexo.solplugin
