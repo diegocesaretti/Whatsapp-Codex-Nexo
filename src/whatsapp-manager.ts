@@ -10,11 +10,11 @@ import makeWASocket, {
 import pino from "pino";
 import * as QRCode from "qrcode";
 import { randomUUID } from "node:crypto";
+import { NexoBridgeStore } from "./nexo-store.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { isAuthorizedPhone, phoneNumberFromJid, safePhoneJid } from "./output-conversation-auth.js";
 import { AppSettingsStore } from "./settings.js";
 import { SolPluginClient } from "./sol-plugin-client.js";
-import { BridgeStore } from "./store.js";
 import {
   detectWhatsappMessageType,
   extractWhatsappText,
@@ -152,7 +152,7 @@ export class WhatsappManager {
   private readonly sessions = new Map<string, RuntimeSession>();
 
   constructor(
-    private readonly store: BridgeStore,
+    private readonly store: NexoBridgeStore,
     private readonly settingsStore?: AppSettingsStore,
     private readonly conversationStore?: OutputConversationStore,
     private readonly solPlugin?: SolPluginClient,
@@ -589,11 +589,13 @@ export class WhatsappManager {
       occurredAt: whatsappTimestamp(message.messageTimestamp).toISOString(),
       origin,
     };
-    const accepted = await this.store.appendMessage(stored);
-    if (!accepted) return;
+    const archiveResult = await this.store.appendInputMessage(stored);
+    if (archiveResult === "rejected") return;
 
-    runtime.storedMessages += 1;
-    runtime.updatedAt = new Date();
+    if (archiveResult === "stored") {
+      runtime.storedMessages += 1;
+      runtime.updatedAt = new Date();
+    }
 
     if (this.solPlugin) {
       const sourceAccount = { ...account, phoneJid: account.phoneJid ?? runtime.phoneJid };
