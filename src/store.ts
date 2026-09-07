@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { Pool, type QueryResultRow } from "pg";
+import { writeTextAtomic } from "./atomic-file.js";
 import type { AccountRecord, AccountRole, OutboundAudit, StoredMessage, WhatsappChatSummary } from "./types.js";
 
 interface AccountsFile {
@@ -26,10 +27,7 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
 }
 
 async function atomicJson(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(temp, path);
+  await writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function terms(query: string): string[] {
