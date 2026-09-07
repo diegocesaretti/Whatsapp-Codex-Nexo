@@ -26,16 +26,37 @@ jobs:
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm build
-      - name: Build Nexo.solplugin
+      - name: Build bundled Nexo.solplugin
+        shell: bash
         run: |
+          set -euo pipefail
           rm -rf .solplugin-stage Nexo.solplugin
-          mkdir -p .solplugin-stage
-          cp package.json sol-plugin.json .solplugin-stage/
-          cp -R dist .solplugin-stage/dist
+          mkdir -p .solplugin-stage/dist
+
+          # Bundle the complete runtime instead of shipping node_modules. SOL deliberately
+          # caps ZIP entries to defend against abusive packages, so a plugin distribution
+          # must stay compact and self-contained.
+          npx --yes esbuild@0.25.9 dist/index.js \
+            --bundle \
+            --platform=node \
+            --format=esm \
+            --target=node22 \
+            --packages=bundle \
+            --outfile=.solplugin-stage/dist/index.js
+
+          cp sol-plugin.json .solplugin-stage/sol-plugin.json
+          node -e 'const p=require("./package.json"); require("fs").writeFileSync(".solplugin-stage/package.json", JSON.stringify({name:"nexo-solplugin-runtime",version:p.version,private:true,type:"module"}, null, 2)+"\n")'
+
+          node --check .solplugin-stage/dist/index.js
           cd .solplugin-stage
-          npm install --omit=dev --ignore-scripts --no-package-lock
           zip -qry ../Nexo.solplugin .
           cd ..
+
+          entries=$(unzip -Z1 Nexo.solplugin | wc -l | tr -d ' ')
+          bytes=$(unzip -l Nexo.solplugin | awk 'END {print $1}')
+          echo "Nexo.solplugin entries=$entries uncompressed_bytes=$bytes"
+          test "$entries" -le 2000
+          test "$bytes" -le $((128 * 1024 * 1024))
       - name: Publish rolling SOL plugin release
         env:
           GH_TOKEN: ${{ github.token }}
