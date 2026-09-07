@@ -1,4 +1,5 @@
 import type { AccountRecord, StoredMessage } from "./types.js";
+import type { SolToolDefinition } from "./sol-tools.js";
 
 interface SolInputRegistration {
   input: {
@@ -35,6 +36,16 @@ export class SolPluginClient {
   log(level: "debug" | "info" | "warn" | "error", message: string): void {
     if (!this.enabled) return;
     console.log(JSON.stringify({ type: "sol.plugin.log", level, message }));
+  }
+
+  async registerTools(baseUrl: string, tools: SolToolDefinition[]): Promise<void> {
+    if (!this.enabled) return;
+    await this.request("/v1/plugin-api/tools/register", {
+      transport: "http",
+      baseUrl,
+      tools,
+    });
+    this.log("info", `Registered ${tools.length} WhatsApp tool(s) in SOL MCP`);
   }
 
   async ensureInput(account: AccountRecord): Promise<string | undefined> {
@@ -112,7 +123,7 @@ export class SolPluginClient {
     const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (!response.ok) {
       const reason = typeof payload.error === "string" ? payload.error : `HTTP ${response.status}`;
-      throw new Error(`SOL Plugin Input API: ${reason}`);
+      throw new Error(`SOL Plugin API: ${reason}`);
     }
     return payload as T;
   }
