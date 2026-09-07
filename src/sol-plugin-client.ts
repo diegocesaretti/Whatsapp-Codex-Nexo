@@ -1,5 +1,6 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { writeTextAtomic } from "./atomic-file.js";
 import { safePhoneJid } from "./output-conversation-auth.js";
 import type { AccountRecord, StoredMessage } from "./types.js";
 import type { SolToolDefinition } from "./sol-tools.js";
@@ -36,15 +37,34 @@ interface SolOutboxFile {
 }
 
 class SolPluginApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly reason?: string) {
     super(message);
     this.name = "SolPluginApiError";
   }
 }
 
+const RECOVERABLE_OLD_FAILURES = [
+  "input_account_owned_by_other_runtime",
+  "plugin_input_not_found",
+  "deadlock detected",
+  "serialization failure",
+  "plugin_input_temporarily_unavailable",
+];
+
 export function isRetryableSolHttpStatus(status: number): boolean {
   if (status >= 500) return true;
   return status === 401 || status === 403 || status === 404 || status === 405 || status === 408 || status === 425 || status === 429;
+}
+
+export function isRecoverableSolFailureMessage(message: string | undefined): boolean {
+  if (!message) return false;
+  const normalized = message.toLowerCase();
+  return RECOVERABLE_OLD_FAILURES.some((needle) => normalized.includes(needle));
+}
+
+function isRetryableSolApiError(error: unknown): boolean {
+  if (!(error instanceof SolPluginApiError)) return true;
+  return isRetryableSolHttpStatus(error.status) || isRecoverableSolFailureMessage(error.reason) || isRecoverableSolFailureMessage(error.message);
 }
 
 export function canonicalWhatsappAccountId(account: Pick<AccountRecord, "id" | "phoneJid">): string {
@@ -74,6 +94,7 @@ export class SolPluginClient {
     if (!this.enabled || this.retryTimer) return;
     this.stopping = false;
     await mkdir(this.dataDir, { recursive: true });
+    await this.recoverKnownDeadLetters();
     this.retryTimer = setInterval(() => {
       void this.flushOutbox().catch((error) => {
         this.log("warn", `SOL ingestion retry loop failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -189,7 +210,16 @@ export class SolPluginClient {
     if (!this.enabled) return;
     await this.withOutboxLock(async () => {
       const outbox = await this.readOutbox();
-      if (!outbox.items.length) return;
+      if (!outbox.items.length) {
+        if (!this.stopping) {
+          const deadLetters = outbox.deadLetters?.length ?? 0;
+          this.reportHealth(deadLetters ? "degraded" : "healthy", {
+            ingestionOutbox: 0,
+            ...(deadLetters ? { deadLetters } : {}),
+          });
+        }
+        return;
+      }
 
       let changed = false;
       while (outbox.items.length) {
@@ -204,7 +234,7 @@ export class SolPluginClient {
           item.lastError = error instanceof Error ? error.message : String(error);
           changed = true;
 
-          const permanentHttpFailure = error instanceof SolPluginApiError && !isRetryableSolHttpStatus(error.status);
+          const permanentHttpFailure = error instanceof SolPluginApiError && !isRetryableSolApiError(error);
           if (permanentHttpFailure) {
             outbox.items.shift();
             const deadLetters = outbox.deadLetters ?? (outbox.deadLetters = []);
@@ -238,6 +268,26 @@ export class SolPluginClient {
           ...(deadLetters ? { deadLetters } : {}),
         });
       }
+    });
+  }
+
+  private async recoverKnownDeadLetters(): Promise<void> {
+    await this.withOutboxLock(async () => {
+      const outbox = await this.readOutbox();
+      const deadLetters = outbox.deadLetters ?? [];
+      if (!deadLetters.length) return;
+      const recoverable = deadLetters.filter((item) => isRecoverableSolFailureMessage(item.lastError));
+      if (!recoverable.length) return;
+      const queuedIds = new Set(outbox.items.map((item) => item.id));
+      for (const item of recoverable) {
+        if (queuedIds.has(item.id)) continue;
+        outbox.items.push({ ...item, attempts: 0, lastAttemptAt: undefined, lastError: undefined });
+        queuedIds.add(item.id);
+      }
+      outbox.deadLetters = deadLetters.filter((item) => !isRecoverableSolFailureMessage(item.lastError));
+      await this.writeOutbox(outbox);
+      this.sourceAccounts.clear();
+      this.log("info", `Recovered ${recoverable.length} SOL ingestion item(s) from an older compatibility failure`);
     });
   }
 
@@ -286,9 +336,7 @@ export class SolPluginClient {
 
   private async writeOutbox(outbox: SolOutboxFile): Promise<void> {
     await mkdir(this.dataDir, { recursive: true });
-    const temporary = `${this.outboxPath}.${process.pid}.tmp`;
-    await writeFile(temporary, JSON.stringify(outbox, null, 2) + "\n", "utf8");
-    await rename(temporary, this.outboxPath);
+    await writeTextAtomic(this.outboxPath, JSON.stringify(outbox, null, 2) + "\n");
   }
 
   private async withOutboxLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -317,7 +365,7 @@ export class SolPluginClient {
     const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (!response.ok) {
       const reason = typeof payload.error === "string" ? payload.error : `HTTP ${response.status}`;
-      throw new SolPluginApiError(`SOL Plugin API: ${reason}`, response.status);
+      throw new SolPluginApiError(`SOL Plugin API: ${reason}`, response.status, reason);
     }
     return payload as T;
   }
