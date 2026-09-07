@@ -9,6 +9,7 @@ on:
 permissions:
   contents: write
 
+# Temporary PR preview workflow; removed after the verified asset is published.
 jobs:
   package:
     runs-on: ubuntu-latest
