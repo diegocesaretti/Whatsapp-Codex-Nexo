@@ -1,4 +1,5 @@
 import { AttachmentInbox } from "./attachment-inbox.js";
+import { preferOfficialCodexCliOnWindows } from "./codex-cli-preference.js";
 import { CodexConversationWorker } from "./codex-conversation-worker.js";
 import { config } from "./config.js";
 import { WhatsappSummarizer } from "./llm.js";
@@ -24,6 +25,12 @@ await settingsStore.syncInputIdentities(await store.listAccounts());
 settings = await settingsStore.get();
 await attachmentInbox.init();
 await attachmentInbox.cleanup(settings.multimodal.retentionDays).catch(() => undefined);
+
+const preferredCodexCli = await preferOfficialCodexCliOnWindows().catch((error) => {
+  console.warn(`[codex] official CLI discovery failed: ${error instanceof Error ? error.message : String(error)}`);
+  return undefined;
+});
+if (preferredCodexCli) console.log(`[codex] preferred CLI: ${preferredCodexCli}`);
 
 const solPlugin = new SolPluginClient();
 await solPlugin.start();
