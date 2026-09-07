@@ -60,10 +60,11 @@ export const nexoSolTools: SolToolDefinition[] = [
 ];
 
 async function bridge<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const timeoutMs = path === "/api/llm/summarize" ? 125_000 : 15_000;
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
     headers: { ...(options.body ? { "content-type": "application/json" } : {}), ...(options.headers || {}) },
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : `HTTP ${response.status}`);
