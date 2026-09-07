@@ -589,17 +589,19 @@ export class WhatsappManager {
       occurredAt: whatsappTimestamp(message.messageTimestamp).toISOString(),
       origin,
     };
-    if (await this.store.appendMessage(stored)) {
-      runtime.storedMessages += 1;
-      runtime.updatedAt = new Date();
-    }
+    const accepted = await this.store.appendMessage(stored);
+    if (!accepted) return;
+
+    runtime.storedMessages += 1;
+    runtime.updatedAt = new Date();
+
     if (this.solPlugin) {
       const sourceAccount = { ...account, phoneJid: account.phoneJid ?? runtime.phoneJid };
       await this.solPlugin.ingestWhatsappMessage(sourceAccount, stored).catch((error) => {
-        runtime.lastError = `SOL ingestion: ${error instanceof Error ? error.message : String(error)}`;
+        runtime.lastError = `SOL outbox: ${error instanceof Error ? error.message : String(error)}`;
         runtime.updatedAt = new Date();
         this.solPlugin?.reportHealth("degraded", { accountId: account.id, reason: runtime.lastError });
-        this.solPlugin?.log("warn", `SOL ingestion failed for ${account.label}: ${runtime.lastError}`);
+        this.solPlugin?.log("warn", `Could not persist SOL ingestion outbox for ${account.label}: ${runtime.lastError}`);
       });
     }
   }
