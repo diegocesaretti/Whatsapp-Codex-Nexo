@@ -26,6 +26,7 @@ await attachmentInbox.init();
 await attachmentInbox.cleanup(settings.multimodal.retentionDays).catch(() => undefined);
 
 const solPlugin = new SolPluginClient();
+await solPlugin.start();
 const manager = new WhatsappManager(store, settingsStore, conversationStore, solPlugin);
 installMultimodalCapture(manager, settingsStore, attachmentInbox);
 if (settings.autoConnectLinkedAccounts) await manager.startLinkedAccounts();
@@ -77,6 +78,7 @@ export async function shutdownNexo(signal: string, exitProcess = true): Promise<
   solToolServer?.close();
   await codexWorker.stop().catch((error) => console.error("Failed to stop Codex worker", error));
   await manager.stopAll().catch((error) => console.error("Failed to stop WhatsApp sessions", error));
+  await solPlugin.stop().catch((error) => console.error("Failed to stop SOL plugin client", error));
   await Promise.all([
     store.close().catch((error) => console.error("Failed to close storage", error)),
     conversationStore.close().catch((error) => console.error("Failed to close output conversation storage", error)),
