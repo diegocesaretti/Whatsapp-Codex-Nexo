@@ -1,0 +1,67 @@
+name: Preview Nexo degraded-state fixes
+
+on:
+  push:
+    branches: [feat/sol-tool-registry]
+    paths:
+      - .github/workflows/preview-degraded-fixes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm test
+      - run: pnpm typecheck
+      - run: pnpm build
+      - name: Build and runtime-smoke bundled plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .solplugin-stage Nexo.solplugin
+          mkdir -p .solplugin-stage/dist
+          npx --yes esbuild@0.25.9 dist/index.js \
+            --bundle --platform=node --format=esm --target=node24 --packages=bundle \
+            --banner:js='import { createRequire as __solCreateRequire } from "node:module"; const require = __solCreateRequire(import.meta.url);' \
+            --outfile=.solplugin-stage/dist/index.js
+          cp sol-plugin.json .solplugin-stage/sol-plugin.json
+          node -e 'const p=require("./package.json"); require("fs").writeFileSync(".solplugin-stage/package.json", JSON.stringify({name:"nexo-solplugin-runtime",version:p.version,private:true,type:"module"}, null, 2)+"\n")'
+          node --check .solplugin-stage/dist/index.js
+          smoke_dir="$(mktemp -d)"
+          smoke_log="$(mktemp)"
+          SOL_PLUGIN_TOKEN=smoke-token SOL_PLUGIN_API_URL=http://127.0.0.1:9 SOL_PLUGIN_DATA_DIR="$smoke_dir" NEXO_WHATSAPP_PORT=0 node .solplugin-stage/dist/index.js >"$smoke_log" 2>&1 &
+          pid=$!
+          ok=0
+          for _ in $(seq 1 28); do
+            if grep -q "WhatsApp Codex Nexo listening" "$smoke_log"; then ok=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then cat "$smoke_log"; wait "$pid" || true; exit 1; fi
+            sleep 0.25
+          done
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          cat "$smoke_log"
+          test "$ok" -eq 1
+          ! grep -q 'Dynamic require of' "$smoke_log"
+          cd .solplugin-stage && zip -qry ../Nexo.solplugin . && cd ..
+          entries=$(unzip -Z1 Nexo.solplugin | wc -l | tr -d ' ')
+          bytes=$(unzip -l Nexo.solplugin | awk 'END {print $1}')
+          echo "entries=$entries uncompressed_bytes=$bytes"
+          test "$entries" -le 2000
+          test "$bytes" -le $((128 * 1024 * 1024))
+          sha256sum Nexo.solplugin
+      - name: Publish PR preview
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=nexo-solplugin-preview-pr22
+          gh release delete "$tag" -y --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" Nexo.solplugin --target "$GITHUB_SHA" --title 'Nexo preview · PR 22 · degraded fixes' --notes 'Windows atomic persistence retry, SOL input recovery, dead-letter recovery and official Codex CLI preference.' --prerelease
