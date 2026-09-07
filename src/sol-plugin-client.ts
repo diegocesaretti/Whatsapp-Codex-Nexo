@@ -32,6 +32,19 @@ interface SolOutboxItem {
 interface SolOutboxFile {
   version: 1;
   items: SolOutboxItem[];
+  deadLetters?: SolOutboxItem[];
+}
+
+class SolPluginApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "SolPluginApiError";
+  }
+}
+
+export function isRetryableSolHttpStatus(status: number): boolean {
+  if (status >= 500) return true;
+  return status === 401 || status === 403 || status === 404 || status === 405 || status === 408 || status === 425 || status === 429;
 }
 
 export function canonicalWhatsappAccountId(account: Pick<AccountRecord, "id" | "phoneJid">): string {
@@ -59,12 +72,17 @@ export class SolPluginClient {
 
   async start(): Promise<void> {
     if (!this.enabled || this.retryTimer) return;
+    this.stopping = false;
     await mkdir(this.dataDir, { recursive: true });
-    await this.flushOutbox();
     this.retryTimer = setInterval(() => {
-      void this.flushOutbox();
+      void this.flushOutbox().catch((error) => {
+        this.log("warn", `SOL ingestion retry loop failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
     }, 15_000);
     this.retryTimer.unref?.();
+    void this.flushOutbox().catch((error) => {
+      this.log("warn", `Initial SOL ingestion backlog drain failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   async stop(): Promise<void> {
@@ -162,7 +180,9 @@ export class SolPluginClient {
         await this.writeOutbox(outbox);
       }
     });
-    await this.flushOutbox();
+    void this.flushOutbox().catch((error) => {
+      this.log("warn", `SOL ingestion delivery attempt failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   async flushOutbox(): Promise<void> {
@@ -183,6 +203,23 @@ export class SolPluginClient {
           item.lastAttemptAt = new Date().toISOString();
           item.lastError = error instanceof Error ? error.message : String(error);
           changed = true;
+
+          const permanentHttpFailure = error instanceof SolPluginApiError && !isRetryableSolHttpStatus(error.status);
+          if (permanentHttpFailure) {
+            outbox.items.shift();
+            const deadLetters = outbox.deadLetters ?? (outbox.deadLetters = []);
+            deadLetters.push(item);
+            if (deadLetters.length > 500) deadLetters.splice(0, deadLetters.length - 500);
+            this.reportHealth("degraded", {
+              reason: "sol_ingestion_dead_letter",
+              status: error.status,
+              pendingItems: outbox.items.length,
+              deadLetters: deadLetters.length,
+            });
+            this.log("error", `SOL ingestion moved permanent failure to dead letter: ${item.lastError}`);
+            continue;
+          }
+
           this.reportHealth("degraded", {
             reason: "sol_ingestion_pending",
             pendingItems: outbox.items.length,
@@ -195,7 +232,11 @@ export class SolPluginClient {
 
       if (changed) await this.writeOutbox(outbox);
       if (!outbox.items.length && !this.stopping) {
-        this.reportHealth("healthy", { ingestionOutbox: 0 });
+        const deadLetters = outbox.deadLetters?.length ?? 0;
+        this.reportHealth(deadLetters ? "degraded" : "healthy", {
+          ingestionOutbox: 0,
+          ...(deadLetters ? { deadLetters } : {}),
+        });
       }
     });
   }
@@ -233,12 +274,13 @@ export class SolPluginClient {
       return {
         version: 1,
         items: Array.isArray(parsed.items) ? parsed.items as SolOutboxItem[] : [],
+        deadLetters: Array.isArray(parsed.deadLetters) ? parsed.deadLetters as SolOutboxItem[] : [],
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.log("warn", `Could not read SOL ingestion outbox: ${error instanceof Error ? error.message : String(error)}`);
       }
-      return { version: 1, items: [] };
+      return { version: 1, items: [], deadLetters: [] };
     }
   }
 
@@ -275,7 +317,7 @@ export class SolPluginClient {
     const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (!response.ok) {
       const reason = typeof payload.error === "string" ? payload.error : `HTTP ${response.status}`;
-      throw new Error(`SOL Plugin API: ${reason}`);
+      throw new SolPluginApiError(`SOL Plugin API: ${reason}`, response.status);
     }
     return payload as T;
   }
