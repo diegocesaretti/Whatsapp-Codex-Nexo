@@ -119,30 +119,67 @@ function pairingError(statusCode: number | undefined, message: string | undefine
   return message;
 }
 
-function isOutputConversationMessage(
-  account: AccountRecord,
-  message: StoredMessage,
-  outputAccount?: AccountRecord,
-): boolean {
-  if (account.role !== "input" || !outputAccount?.phoneJid) return false;
-  const outputPhone = phoneNumberFromJid(outputAccount.phoneJid);
-  if (!outputPhone) return false;
-  return [message.chatJid, message.chatAltJid, message.senderJid, message.senderAltJid]
-    .some((jid) => phoneNumberFromJid(jid) === outputPhone);
+function publicStatus(runtime: RuntimeSession): RuntimeStatus {
+  return {
+    accountId: runtime.accountId,
+    state: runtime.state,
+    qrDataUrl: runtime.qrDataUrl,
+    phoneJid: runtime.phoneJid,
+    displayName: runtime.displayName,
+    reconnectAttempt: runtime.reconnectAttempt,
+    lastError: runtime.lastError,
+    updatedAt: runtime.updatedAt.toISOString(),
+    receivedMessages: runtime.receivedMessages,
+    storedMessages: runtime.storedMessages,
+    historyMessages: runtime.historyMessages,
+    lastMessageAt: runtime.lastMessageAt?.toISOString(),
+  };
+}
+
+function emptyStatus(accountId: string): RuntimeStatus {
+  return {
+    accountId,
+    state: "idle",
+    reconnectAttempt: 0,
+    updatedAt: new Date().toISOString(),
+    receivedMessages: 0,
+    storedMessages: 0,
+    historyMessages: 0,
+  };
 }
 
 export class WhatsappManager {
-  private readonly runtimes = new Map<string, RuntimeSession>();
+  private readonly sessions = new Map<string, RuntimeSession>();
 
   constructor(
     private readonly store: BridgeStore,
-    private readonly settingsStore: AppSettingsStore,
-    private readonly outputConversationStore: OutputConversationStore,
+    private readonly settingsStore?: AppSettingsStore,
+    private readonly conversationStore?: OutputConversationStore,
     private readonly solPlugin?: SolPluginClient,
   ) {}
 
-  private session(accountId: string): RuntimeSession {
-    let runtime = this.runtimes.get(accountId);
+  getStatus(accountId: string): RuntimeStatus {
+    const runtime = this.sessions.get(accountId);
+    return runtime ? publicStatus(runtime) : emptyStatus(accountId);
+  }
+
+  async startLinkedAccounts(): Promise<void> {
+    const accounts = await this.store.listAccounts();
+    await Promise.all(
+      accounts
+        .filter((account) => account.enabled && account.linkedAt)
+        .map((account) => this.start(account.id).catch((error) => {
+          console.error(`[whatsapp:${account.id}] autostart failed`, error);
+        })),
+    );
+  }
+
+  async start(accountId: string): Promise<RuntimeStatus> {
+    const account = await this.store.getAccount(accountId);
+    if (!account) throw new Error("WhatsApp account not found");
+    if (!account.enabled) throw new Error("WhatsApp account is disabled");
+
+    let runtime = this.sessions.get(accountId);
     if (!runtime) {
       runtime = {
         accountId,
@@ -156,205 +193,202 @@ export class WhatsappManager {
         storedMessages: 0,
         historyMessages: 0,
       };
-      this.runtimes.set(accountId, runtime);
+      this.sessions.set(accountId, runtime);
     }
-    return runtime;
-  }
-
-  getStatus(accountId: string): RuntimeStatus {
-    const runtime = this.session(accountId);
-    return {
-      accountId,
-      state: runtime.state,
-      qrDataUrl: runtime.qrDataUrl,
-      phoneJid: runtime.phoneJid,
-      displayName: runtime.displayName,
-      reconnectAttempt: runtime.reconnectAttempt,
-      lastError: runtime.lastError,
-      updatedAt: runtime.updatedAt.toISOString(),
-      receivedMessages: runtime.receivedMessages,
-      storedMessages: runtime.storedMessages,
-      historyMessages: runtime.historyMessages,
-      lastMessageAt: runtime.lastMessageAt?.toISOString(),
-    };
-  }
-
-  async startLinkedAccounts(): Promise<void> {
-    const accounts = await this.store.listAccounts();
-    for (const account of accounts) {
-      if (account.enabled && account.linkedAt) {
-        await this.start(account.id).catch((error) => {
-          console.error(`[whatsapp] failed to auto-start ${account.label}`, error);
-        });
-      }
-    }
-  }
-
-  async start(accountId: string): Promise<RuntimeStatus> {
-    const account = await this.store.getAccount(accountId);
-    if (!account) throw new Error("account_not_found");
-    const runtime = this.session(accountId);
     runtime.manualStop = false;
-    if (runtime.state === "open" || runtime.state === "connecting" || runtime.state === "qr" || runtime.state === "reconnecting") return this.getStatus(accountId);
+    if (runtime.socket && ["connecting", "qr", "open", "reconnecting"].includes(runtime.state)) {
+      return publicStatus(runtime);
+    }
     await this.connect(account, runtime);
-    return this.getStatus(accountId);
+    return publicStatus(runtime);
   }
 
   async restart(accountId: string): Promise<RuntimeStatus> {
-    await this.stop(accountId);
-    const runtime = this.session(accountId);
-    runtime.manualStop = false;
-    const account = await this.store.getAccount(accountId);
-    if (!account) throw new Error("account_not_found");
-    await this.connect(account, runtime);
-    return this.getStatus(accountId);
-  }
-
-  async stop(accountId: string): Promise<void> {
-    const runtime = this.session(accountId);
-    runtime.manualStop = true;
-    runtime.generation += 1;
-    if (runtime.reconnectTimer) clearTimeout(runtime.reconnectTimer);
-    runtime.reconnectTimer = undefined;
-    runtime.socket?.end(undefined);
-    runtime.socket = undefined;
-    runtime.state = "idle";
-    runtime.qrDataUrl = undefined;
-    runtime.updatedAt = new Date();
-    await this.solPlugin?.setDisconnectedByAccountId(accountId).catch(() => undefined);
-  }
-
-  async stopAll(): Promise<void> {
-    await Promise.all([...this.runtimes.keys()].map((accountId) => this.stop(accountId)));
+    const runtime = this.sessions.get(accountId);
+    if (runtime) await this.stopRuntime(runtime, false);
+    return this.start(accountId);
   }
 
   async logout(accountId: string): Promise<void> {
-    const account = await this.store.getAccount(accountId);
-    if (!account) throw new Error("account_not_found");
-    const runtime = this.session(accountId);
-    runtime.manualStop = true;
-    runtime.generation += 1;
-    if (runtime.reconnectTimer) clearTimeout(runtime.reconnectTimer);
-    runtime.reconnectTimer = undefined;
-    try {
-      await runtime.socket?.logout();
-    } catch {}
-    runtime.socket?.end(undefined);
-    runtime.socket = undefined;
-    runtime.state = "logged_out";
-    runtime.qrDataUrl = undefined;
-    runtime.phoneJid = undefined;
-    runtime.displayName = undefined;
-    runtime.updatedAt = new Date();
-    await this.store.clearAuth(accountId);
-    await this.store.updateAccount(accountId, { linkedAt: undefined, phoneJid: undefined, displayName: undefined });
-    await this.solPlugin?.setDisconnectedByAccountId(accountId).catch(() => undefined);
-  }
-
-  async sendText(input: { to: string; text: string; reason?: string }): Promise<OutboundAudit> {
-    const destination = normalizeSendTarget(input.to);
-    const output = await this.store.getOutputAccount();
-    if (!output) throw new Error("output_account_not_configured");
-    const runtime = this.session(output.id);
-    if (!runtime.socket || runtime.state !== "open") throw new Error("output_account_not_connected");
-    const text = input.text.trim();
-    if (!text) throw new Error("text_required");
-    const sent = await runtime.socket.sendMessage(destination, { text });
-    const audit: OutboundAudit = {
-      id: randomUUID(),
-      accountId: output.id,
-      to: destination,
-      text,
-      reason: input.reason,
-      messageId: sent?.key.id ?? undefined,
-      sentAt: new Date().toISOString(),
-    };
-    await this.store.appendOutboundAudit(audit);
-    return audit;
-  }
-
-  async replyToArchivedMessage(input: { storedMessageId: string; text: string; reason?: string }): Promise<OutboundAudit> {
-    const context = await this.store.getReplyContext(input.storedMessageId);
-    if (!context) throw new Error("stored_message_not_found");
-    const destination = normalizeSendTarget(context.chatAltJid || context.chatJid);
-    const output = await this.store.getOutputAccount();
-    if (!output) throw new Error("output_account_not_configured");
-    const runtime = this.session(output.id);
-    if (!runtime.socket || runtime.state !== "open") throw new Error("output_account_not_connected");
-    const text = input.text.trim();
-    if (!text) throw new Error("text_required");
-    const sent = await runtime.socket.sendMessage(destination, { text });
-    const audit: OutboundAudit = {
-      id: randomUUID(),
-      accountId: output.id,
-      to: destination,
-      text,
-      reason: input.reason,
-      replyTo: context,
-      messageId: sent?.key.id ?? undefined,
-      sentAt: new Date().toISOString(),
-    };
-    await this.store.appendOutboundAudit(audit);
-    return audit;
-  }
-
-  async replyToOutputConversationMessage(input: { inboundMessageId: string; text: string; reason?: string }): Promise<OutboundAudit> {
-    const settings = await this.settingsStore.get();
-    if (!settings.outputConversation.enabled) throw new Error("output_conversation_disabled");
-    const inbound = await this.outputConversationStore.get(input.inboundMessageId);
-    if (!inbound || inbound.direction !== "inbound") throw new Error("output_conversation_message_not_found");
-    if (!inbound.authorized || !isAuthorizedPhone(settings.outputConversation.authorizedNumbers, inbound.peerPhone)) {
-      throw new Error("output_conversation_sender_not_authorized");
+    const runtime = this.sessions.get(accountId);
+    if (runtime) {
+      runtime.manualStop = true;
+      if (runtime.reconnectTimer) clearTimeout(runtime.reconnectTimer);
+      try { await runtime.socket?.logout("Codex Nexo unlink"); } catch {}
+      try { runtime.socket?.end(undefined); } catch {}
+      await runtime.queue.catch(() => undefined);
+      this.sessions.delete(accountId);
     }
+    await this.store.deleteAccount(accountId);
+  }
+
+  async stopAll(): Promise<void> {
+    await Promise.all([...this.sessions.values()].map((runtime) => this.stopRuntime(runtime, true)));
+    this.sessions.clear();
+  }
+
+  private async setOutputConversationPresence(to: string, presence: OutputPresence): Promise<void> {
     const output = await this.store.getOutputAccount();
-    if (!output) throw new Error("output_account_not_configured");
-    const runtime = this.session(output.id);
-    if (!runtime.socket || runtime.state !== "open") throw new Error("output_account_not_connected");
-    const text = input.text.trim();
-    if (!text) throw new Error("text_required");
-    const sent = await runtime.socket.sendMessage(safePhoneJid(inbound.peerJid, inbound.peerAltJid) || `${inbound.peerPhone}@s.whatsapp.net`, { text });
-    const audit: OutboundAudit = {
-      id: randomUUID(),
-      accountId: output.id,
-      to: `${inbound.peerPhone}@s.whatsapp.net`,
-      text,
-      reason: input.reason,
-      messageId: sent?.key.id ?? undefined,
-      sentAt: new Date().toISOString(),
+    if (!output) throw new Error("No WhatsApp output account is configured");
+    await this.start(output.id);
+    const runtime = this.sessions.get(output.id);
+    if (!runtime?.socket || runtime.state !== "open") throw new Error("WhatsApp output account is not connected");
+    if (presence === "available" || presence === "unavailable") {
+      await runtime.socket.sendPresenceUpdate(presence);
+    } else {
+      await runtime.socket.sendPresenceUpdate(presence, normalizeSendTarget(to));
+    }
+    runtime.updatedAt = new Date();
+  }
+
+  async beginOutputConversationActivity(to: string): Promise<void> {
+    await this.setOutputConversationPresence(to, "available");
+    await this.setOutputConversationPresence(to, "composing");
+  }
+
+  async refreshOutputConversationActivity(to: string): Promise<void> {
+    await this.setOutputConversationPresence(to, "composing");
+  }
+
+  async endOutputConversationActivity(to: string): Promise<void> {
+    await this.setOutputConversationPresence(to, "paused").catch(() => undefined);
+    await this.setOutputConversationPresence(to, "unavailable").catch(() => undefined);
+  }
+
+  async replyToArchivedMessage(input: {
+    storedMessageId: string;
+    text: string;
+    reason?: string;
+  }): Promise<OutboundAudit> {
+    const resolved = await this.store.resolveMessageTarget(input.storedMessageId);
+    if (!resolved) {
+      const source = await this.store.getMessage(input.storedMessageId);
+      if (!source) throw new Error("Archived WhatsApp message not found");
+      throw new Error("Archived WhatsApp message does not expose a safe send target");
+    }
+    const source = resolved.message;
+    const replyTo: OutboundReplyContext = {
+      storedMessageId: source.id,
+      sourceAccountId: source.accountId,
+      sourceMessageId: source.sourceMessageId,
+      chatJid: source.chatJid,
+      chatAltJid: source.chatAltJid,
+      chatName: source.chatName,
+      senderName: source.senderName,
+      occurredAt: source.occurredAt,
     };
-    await this.store.appendOutboundAudit(audit);
-    await this.outputConversationStore.append({
-      id: `out:${audit.id}`,
+    return this.sendText({
+      to: resolved.sendTarget,
+      text: input.text,
+      reason: input.reason,
+      replyTo,
+    });
+  }
+
+  async replyToOutputConversationMessage(input: {
+    inboundMessageId: string;
+    text: string;
+    reason?: string;
+  }): Promise<OutboundAudit> {
+    if (!this.settingsStore || !this.conversationStore) throw new Error("OUTPUT conversation channel is unavailable");
+    const settings = await this.settingsStore.get();
+    if (!settings.outputConversation.enabled) throw new Error("OUTPUT conversation channel is disabled");
+    const source = await this.conversationStore.get(input.inboundMessageId);
+    if (!source || source.direction !== "inbound" || !source.authorized) {
+      throw new Error("Authorized inbound OUTPUT conversation message not found");
+    }
+    if (!isAuthorizedPhone(settings.outputConversation.authorizedNumbers, source.peerPhone)) {
+      throw new Error("The sender is no longer authorized for OUTPUT conversation");
+    }
+    const audit = await this.sendText({
+      to: source.peerJid,
+      text: input.text,
+      reason: input.reason?.trim() || "Codex OUTPUT conversation reply",
+      conversationReplyToId: source.id,
+    });
+    await this.conversationStore.acknowledge([source.id]);
+    return audit;
+  }
+
+  async sendText(input: {
+    to: string;
+    text: string;
+    reason?: string;
+    replyTo?: OutboundReplyContext;
+    conversationReplyToId?: string;
+  }): Promise<OutboundAudit> {
+    const output = await this.store.getOutputAccount();
+    if (!output) throw new Error("No WhatsApp output account is configured");
+    const message = input.text.trim();
+    if (!message) throw new Error("Message text is required");
+    if (message.length > 12_000) throw new Error("Message text is too long");
+    await this.start(output.id);
+    const runtime = this.sessions.get(output.id);
+    if (!runtime?.socket || runtime.state !== "open") {
+      throw new Error("WhatsApp output account is not connected");
+    }
+    const to = normalizeSendTarget(input.to);
+    await runtime.socket.sendPresenceUpdate("available").catch(() => undefined);
+    try {
+      const result = await runtime.socket.sendMessage(to, { text: message });
+      const audit: OutboundAudit = {
+        id: randomUUID(),
+        accountId: output.id,
+        to,
+        text: message,
+        reason: input.reason?.trim().slice(0, 500) || undefined,
+        replyTo: input.replyTo,
+        messageId: result?.key.id ?? undefined,
+        sentAt: new Date().toISOString(),
+      };
+      await this.store.appendOutbound(audit);
+      await this.captureOutboundConversation(output, audit, input.conversationReplyToId);
+      runtime.lastMessageAt = new Date();
+      runtime.updatedAt = new Date();
+      return audit;
+    } finally {
+      await runtime.socket.sendPresenceUpdate("unavailable").catch(() => undefined);
+    }
+  }
+
+  private async captureOutboundConversation(
+    output: AccountRecord,
+    audit: OutboundAudit,
+    replyToId?: string,
+  ): Promise<void> {
+    if (!this.settingsStore || !this.conversationStore) return;
+    const settings = await this.settingsStore.get();
+    if (!settings.outputConversation.enabled) return;
+    const peerJid = safePhoneJid(audit.to);
+    const peerPhone = phoneNumberFromJid(peerJid);
+    if (!peerJid || !isAuthorizedPhone(settings.outputConversation.authorizedNumbers, peerPhone)) return;
+    const whatsappMessageId = audit.messageId ?? `audit-${audit.id}`;
+    const stored: OutputConversationMessage = {
+      id: `${output.id}:${whatsappMessageId}:outbound`,
       accountId: output.id,
-      whatsappMessageId: audit.messageId || audit.id,
-      peerJid: `${inbound.peerPhone}@s.whatsapp.net`,
-      peerPhone: inbound.peerPhone,
+      whatsappMessageId,
+      peerJid,
+      peerPhone: peerPhone!,
       direction: "outbound",
-      text,
+      text: audit.text,
+      messageType: "conversation",
+      senderName: output.displayName,
       authorized: true,
       occurredAt: audit.sentAt,
-      replyToId: inbound.id,
-    });
-    return audit;
-  }
-
-  async sendOutputPresence(peer: string, presence: OutputPresence): Promise<void> {
-    const output = await this.store.getOutputAccount();
-    if (!output) throw new Error("output_account_not_configured");
-    const runtime = this.session(output.id);
-    if (!runtime.socket || runtime.state !== "open") throw new Error("output_account_not_connected");
-    const destination = normalizeSendTarget(peer);
-    await runtime.socket.sendPresenceUpdate(presence, destination);
+      replyToId,
+    };
+    await this.conversationStore.append(stored);
   }
 
   private async connect(account: AccountRecord, runtime: RuntimeSession): Promise<void> {
     runtime.generation += 1;
     const generation = runtime.generation;
-    runtime.state = "connecting";
+    runtime.state = runtime.reconnectAttempt ? "reconnecting" : "connecting";
+    runtime.qrDataUrl = undefined;
     runtime.lastError = undefined;
     runtime.updatedAt = new Date();
 
-    const { state, saveCreds } = await useMultiFileAuthState(await this.store.authDirectory(account.id));
+    const { state, saveCreds } = await useMultiFileAuthState(this.store.authDir(account.id));
     const version = await resolveWaWebVersion();
     const socket = makeWASocket({
       ...(version ? { version } : {}),
@@ -362,123 +396,166 @@ export class WhatsappManager {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
-      browser: Browsers.macOS("Desktop"),
       logger,
+      browser: Browsers.ubuntu(account.role === "output" ? "Codex WhatsApp Output" : `Codex Input · ${account.label}`),
       printQRInTerminal: false,
-      syncFullHistory: account.role === "input",
       markOnlineOnConnect: false,
-      generateHighQualityLinkPreview: false,
+      syncFullHistory: account.role === "input",
+      shouldSyncHistoryMessage: () => account.role === "input",
+      shouldIgnoreJid,
+      emitOwnEvents: true,
     });
     runtime.socket = socket;
 
-    socket.ev.on("creds.update", saveCreds);
+    socket.ev.on("creds.update", () => {
+      void saveCreds().catch((error) => {
+        runtime.lastError = `Failed to persist WhatsApp credentials: ${error instanceof Error ? error.message : String(error)}`;
+        runtime.updatedAt = new Date();
+      });
+    });
+
     socket.ev.on("connection.update", (update) => {
-      void this.handleConnectionUpdate(account, runtime, generation, update);
-    });
-    socket.ev.on("messaging-history.set", ({ messages }) => {
-      if (account.role !== "input") return;
-      runtime.queue = runtime.queue.then(async () => {
-        for (const message of messages) {
-          await this.captureMessage(account, runtime, message, "history", runtime.phoneJid);
-          runtime.historyMessages += 1;
-        }
-      }).catch((error) => {
-        runtime.lastError = error instanceof Error ? error.message : String(error);
+      if (runtime.generation !== generation) return;
+      if (update.qr) {
+        void QRCode.toDataURL(update.qr, { width: 320, margin: 1, errorCorrectionLevel: "M" })
+          .then((dataUrl) => {
+            if (runtime.generation !== generation) return;
+            runtime.qrDataUrl = dataUrl;
+            runtime.state = "qr";
+            runtime.lastError = undefined;
+            runtime.updatedAt = new Date();
+          })
+          .catch((error) => {
+            runtime.lastError = `QR generation failed: ${String(error)}`;
+            runtime.updatedAt = new Date();
+          });
+      }
+      if (update.connection === "open") {
+        runtime.state = "open";
+        runtime.qrDataUrl = undefined;
+        runtime.reconnectAttempt = 0;
+        runtime.lastError = undefined;
+        runtime.phoneJid = socket.user?.id;
+        runtime.displayName = socket.user?.name ?? undefined;
         runtime.updatedAt = new Date();
-      });
+        void this.store.updateAccount(account.id, {
+          linkedAt: account.linkedAt ?? new Date().toISOString(),
+          phoneJid: socket.user?.id,
+          displayName: socket.user?.name ?? undefined,
+          lastError: undefined,
+        }).catch((error) => console.error(`[whatsapp:${account.id}] account state update failed`, error));
+        if (account.role === "input" && this.solPlugin) {
+          const linkedAccount = {
+            ...account,
+            phoneJid: socket.user?.id ?? account.phoneJid,
+            displayName: socket.user?.name ?? account.displayName,
+          };
+          void this.solPlugin.setStatus(linkedAccount, "connected", new Date().toISOString()).catch((error) => {
+            this.solPlugin?.log("warn", `Could not mark ${account.label} connected in SOL: ${error instanceof Error ? error.message : String(error)}`);
+          });
+        }
+      }
+      if (update.connection === "close") {
+        if (account.role === "input" && this.solPlugin) {
+          void this.solPlugin.setStatus(account, "disconnected").catch(() => undefined);
+        }
+        void this.handleClose(account, runtime, generation, update.lastDisconnect?.error);
+      }
     });
-    socket.ev.on("messages.upsert", ({ messages }) => {
-      runtime.queue = runtime.queue.then(async () => {
-        for (const message of messages) {
-          if (account.role === "output") {
-            await this.captureOutputConversationMessage(account, runtime, message);
-          } else {
-            await this.captureMessage(account, runtime, message, "realtime", runtime.phoneJid);
+
+    socket.ev.on("messages.upsert", (upsert) => {
+      runtime.receivedMessages += upsert.messages.length;
+      runtime.lastMessageAt = new Date();
+      if (account.role === "input") {
+        const origin = upsert.type === "notify" ? "realtime" : "history";
+        this.enqueue(runtime, async () => {
+          for (const message of upsert.messages) {
+            await this.ingestMessage(account, runtime, message, origin, socket.user?.id);
           }
+        });
+        return;
+      }
+      if (upsert.type !== "notify") return;
+      this.enqueue(runtime, async () => {
+        for (const message of upsert.messages) {
+          await this.ingestOutputConversationMessage(account, runtime, message);
         }
-      }).catch((error) => {
-        runtime.lastError = error instanceof Error ? error.message : String(error);
-        runtime.updatedAt = new Date();
+      });
+    });
+
+    socket.ev.on("messaging-history.set", (history) => {
+      if (account.role !== "input") return;
+      runtime.historyMessages += history.messages.length;
+      this.enqueue(runtime, async () => {
+        const contacts = (history as unknown as {
+          contacts?: Array<{ id: string; name?: string | null; notify?: string | null }>;
+        }).contacts ?? [];
+        await this.store.updateChatNames(account.id, [
+          ...history.chats.map((chat) => ({ jid: chat.id, name: (chat as { name?: string | null }).name })),
+          ...contacts.map((contact) => ({ jid: contact.id, name: contact.name ?? contact.notify })),
+        ]);
+        for (const message of history.messages) {
+          await this.ingestMessage(account, runtime, message, "history", socket.user?.id);
+        }
       });
     });
   }
 
-  private async handleConnectionUpdate(
-    account: AccountRecord,
-    runtime: RuntimeSession,
-    generation: number,
-    update: Record<string, any>,
-  ): Promise<void> {
-    if (runtime.generation !== generation) return;
-    if (update.qr) {
-      runtime.state = "qr";
-      runtime.qrDataUrl = await QRCode.toDataURL(update.qr, { margin: 1, width: 320 });
-      runtime.updatedAt = new Date();
-    }
-    if (update.connection === "open") {
-      runtime.state = "open";
-      runtime.qrDataUrl = undefined;
-      runtime.reconnectAttempt = 0;
-      runtime.lastError = undefined;
-      runtime.phoneJid = safePhoneJid(runtime.socket?.user?.id, runtime.socket?.user?.lid) ?? runtime.socket?.user?.id ?? undefined;
-      runtime.displayName = runtime.socket?.user?.name ?? undefined;
-      runtime.updatedAt = new Date();
-      await this.store.updateAccount(account.id, {
-        linkedAt: account.linkedAt ?? new Date().toISOString(),
-        phoneJid: runtime.phoneJid,
-        displayName: runtime.displayName,
-        lastError: undefined,
+  private enqueue(runtime: RuntimeSession, task: () => Promise<void>): void {
+    runtime.queue = runtime.queue
+      .catch(() => undefined)
+      .then(task)
+      .catch((error) => {
+        runtime.lastError = error instanceof Error ? error.message : String(error);
+        runtime.updatedAt = new Date();
+        console.error(`[whatsapp:${runtime.accountId}] queue task failed`, error);
       });
-      await this.settingsStore.syncInputIdentities(await this.store.listAccounts()).catch((error) => {
-        console.error(`[identity] failed to sync linked INPUT identities after connecting ${account.label}`, error);
-      });
-      const sourceAccount = { ...account, phoneJid: runtime.phoneJid, displayName: runtime.displayName };
-      await this.solPlugin?.setStatus(sourceAccount, "connected", new Date().toISOString()).catch((error) => {
-        this.solPlugin?.reportHealth("degraded", { accountId: account.id, reason: String(error) });
-      });
-    }
-    if (update.connection === "close") {
-      await this.handleClose(account, runtime, generation, update.lastDisconnect?.error);
-    }
   }
 
-  private async captureOutputConversationMessage(
+  private async ingestOutputConversationMessage(
     account: AccountRecord,
     runtime: RuntimeSession,
     message: WAMessage,
   ): Promise<void> {
-    const settings = await this.settingsStore.get();
-    if (!settings.outputConversation.enabled) return;
+    if (!this.settingsStore || !this.conversationStore) return;
     const key = message.key as ExtendedMessageKey;
-    const chatJid = key.remoteJid;
-    const whatsappMessageId = key.id;
-    if (!chatJid || !whatsappMessageId || shouldIgnoreJid(chatJid) || chatJid.endsWith("@g.us")) return;
-    const chatAltJid = key.remoteJidAlt ?? undefined;
-    const fromMe = Boolean(key.fromMe);
-    const peerPhone = phoneNumberFromJid(fromMe ? safePhoneJid(chatJid, chatAltJid) : safePhoneJid(key.participant, key.participantAlt, chatJid, chatAltJid));
-    if (!peerPhone || !isAuthorizedPhone(settings.outputConversation.authorizedNumbers, peerPhone)) return;
+    if (key.fromMe) return;
+    const remoteJid = key.remoteJid;
+    const sourceMessageId = key.id;
+    if (!remoteJid || !sourceMessageId || shouldIgnoreJid(remoteJid) || remoteJid.endsWith("@g.us")) return;
+    const remoteAltJid = key.remoteJidAlt ?? undefined;
+    const peerJid = safePhoneJid(remoteJid, remoteAltJid);
+    const peerPhone = phoneNumberFromJid(peerJid);
+    if (!peerJid || !peerPhone) return;
+
+    const settings = await this.settingsStore.get();
+    if (!settings.outputConversation.enabled || !isAuthorizedPhone(settings.outputConversation.authorizedNumbers, peerPhone)) return;
+
     const stored: OutputConversationMessage = {
-      id: `${account.id}:${chatJid}:${whatsappMessageId}:${fromMe ? "out" : "in"}`,
+      id: `${account.id}:${sourceMessageId}:inbound`,
       accountId: account.id,
-      whatsappMessageId,
-      peerJid: chatJid,
-      peerAltJid: chatAltJid,
+      whatsappMessageId: sourceMessageId,
+      peerJid,
+      peerAltJid: remoteJid !== peerJid ? remoteJid : remoteAltJid,
       peerPhone,
-      direction: fromMe ? "outbound" : "inbound",
+      direction: "inbound",
       text: extractWhatsappText(message.message),
       messageType: detectWhatsappMessageType(message.message),
-      senderName: fromMe ? account.displayName ?? runtime.displayName : message.pushName ?? undefined,
+      senderName: message.pushName ?? undefined,
       authorized: true,
       occurredAt: whatsappTimestamp(message.messageTimestamp).toISOString(),
     };
-    await this.outputConversationStore.append(stored);
+    if (await this.conversationStore.append(stored)) {
+      runtime.storedMessages += 1;
+      runtime.updatedAt = new Date();
+    }
   }
 
-  private async captureMessage(
+  private async ingestMessage(
     account: AccountRecord,
     runtime: RuntimeSession,
     message: WAMessage,
-    origin: StoredMessage["origin"],
+    origin: "history" | "realtime",
     ownJid?: string,
   ): Promise<void> {
     const key = message.key as ExtendedMessageKey;
@@ -512,19 +589,17 @@ export class WhatsappManager {
       occurredAt: whatsappTimestamp(message.messageTimestamp).toISOString(),
       origin,
     };
-    const accepted = await this.store.appendMessage(stored);
-    if (!accepted) return;
-
-    runtime.storedMessages += 1;
-    runtime.updatedAt = new Date();
-
+    if (await this.store.appendMessage(stored)) {
+      runtime.storedMessages += 1;
+      runtime.updatedAt = new Date();
+    }
     if (this.solPlugin) {
       const sourceAccount = { ...account, phoneJid: account.phoneJid ?? runtime.phoneJid };
       await this.solPlugin.ingestWhatsappMessage(sourceAccount, stored).catch((error) => {
-        runtime.lastError = `SOL outbox: ${error instanceof Error ? error.message : String(error)}`;
+        runtime.lastError = `SOL ingestion: ${error instanceof Error ? error.message : String(error)}`;
         runtime.updatedAt = new Date();
         this.solPlugin?.reportHealth("degraded", { accountId: account.id, reason: runtime.lastError });
-        this.solPlugin?.log("warn", `Could not persist SOL ingestion outbox for ${account.label}: ${runtime.lastError}`);
+        this.solPlugin?.log("warn", `SOL ingestion failed for ${account.label}: ${runtime.lastError}`);
       });
     }
   }
@@ -554,11 +629,25 @@ export class WhatsappManager {
     runtime.lastError = pairingError(statusCode, message);
     const delay = Math.min(30_000, 1_000 * 2 ** Math.min(runtime.reconnectAttempt, 5));
     runtime.reconnectTimer = setTimeout(() => {
-      if (runtime.generation !== generation || runtime.manualStop) return;
-      void this.connect(account, runtime).catch((connectError) => {
-        runtime.lastError = connectError instanceof Error ? connectError.message : String(connectError);
+      runtime.reconnectTimer = undefined;
+      void this.start(account.id).catch((reconnectError) => {
+        runtime.state = "error";
+        runtime.lastError = reconnectError instanceof Error ? reconnectError.message : String(reconnectError);
         runtime.updatedAt = new Date();
       });
     }, delay);
+    runtime.reconnectTimer.unref();
+  }
+
+  private async stopRuntime(runtime: RuntimeSession, manualStop: boolean): Promise<void> {
+    runtime.manualStop = manualStop;
+    if (runtime.reconnectTimer) clearTimeout(runtime.reconnectTimer);
+    runtime.reconnectTimer = undefined;
+    try { runtime.socket?.end(undefined); } catch {}
+    runtime.socket = undefined;
+    await runtime.queue.catch(() => undefined);
+    runtime.state = "idle";
+    runtime.updatedAt = new Date();
+    if (this.solPlugin) await this.solPlugin.setDisconnectedByAccountId(runtime.accountId).catch(() => undefined);
   }
 }
