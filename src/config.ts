@@ -61,12 +61,13 @@ export function discoverDatabaseUrl(cwd = process.cwd(), env: NodeJS.ProcessEnv 
   return { source: "none" };
 }
 
-const database = discoverDatabaseUrl();
+const pluginRuntime = Boolean(process.env.SOL_PLUGIN_TOKEN?.trim());
+const database: DatabaseDiscovery = pluginRuntime ? { source: "none" } : discoverDatabaseUrl();
 
 export const config = {
   host: process.env.NEXO_WHATSAPP_HOST?.trim() || "127.0.0.1",
   port: integerEnv("NEXO_WHATSAPP_PORT", 3210),
-  dataDir: resolve(process.env.NEXO_WHATSAPP_DATA_DIR?.trim() || ".data"),
+  dataDir: resolve(process.env.SOL_PLUGIN_DATA_DIR?.trim() || process.env.NEXO_WHATSAPP_DATA_DIR?.trim() || ".data"),
   databaseUrl: database.url,
   databaseSource: database.source,
   databaseSourcePath: database.sourcePath,

@@ -43,7 +43,7 @@ export class SolPluginClient {
     if (cached) return cached;
     const response = await this.request<SolInputRegistration>("/v1/plugin-api/inputs/register", {
       provider: "whatsapp",
-      externalAccountId: account.id,
+      externalAccountId: account.phoneJid?.trim() || account.id,
       label: account.label,
     });
     this.sourceAccounts.set(account.id, response.input.id);
@@ -55,6 +55,7 @@ export class SolPluginClient {
     status: "connected" | "disconnected" | "error",
     lastSyncAt?: string,
   ): Promise<void> {
+    if (!this.sourceAccounts.has(account.id) && !account.phoneJid?.trim() && status !== "connected") return;
     const sourceAccountId = await this.ensureInput(account);
     if (!sourceAccountId) return;
     await this.request(`/v1/plugin-api/inputs/${sourceAccountId}/status`, {

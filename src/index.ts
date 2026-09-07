@@ -8,6 +8,7 @@ import { OutputConversationStore } from "./output-conversation-store.js";
 import { createBridgeServer } from "./server.js";
 import { AppSettingsStore } from "./settings.js";
 import { retryTransientStartup } from "./startup-retry.js";
+import { SolPluginClient } from "./sol-plugin-client.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 
 const settingsStore = new AppSettingsStore(config.dataDir);
@@ -22,7 +23,8 @@ settings = await settingsStore.get();
 await attachmentInbox.init();
 await attachmentInbox.cleanup(settings.multimodal.retentionDays).catch(() => undefined);
 
-const manager = new WhatsappManager(store, settingsStore, conversationStore);
+const solPlugin = new SolPluginClient();
+const manager = new WhatsappManager(store, settingsStore, conversationStore, solPlugin);
 installMultimodalCapture(manager, settingsStore, attachmentInbox);
 if (settings.autoConnectLinkedAccounts) await manager.startLinkedAccounts();
 
@@ -37,6 +39,7 @@ server.listen(config.port, config.host, () => {
   console.log(`Codex resident worker: ${settings.codexWorker.enabled ? "enabled" : "disabled"}`);
   console.log(`Multimodal inbox: ${settings.multimodal.enabled ? `enabled · max ${settings.multimodal.maxFileMb} MB · retention ${settings.multimodal.retentionDays}d` : "disabled"}`);
   console.log("Multiple INPUT accounts are read-only; OUTPUT conversation replies and media are isolated from the searchable INPUT archive.");
+  solPlugin.reportReady({ bridgeUrl: `http://${config.host}:${config.port}`, storage: store.storageMode, mode: "whatsapp" });
   void codexWorker.start().catch((error) => console.error("Failed to start Codex worker", error));
 });
 
