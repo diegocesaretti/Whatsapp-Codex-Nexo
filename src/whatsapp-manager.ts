@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { isAuthorizedPhone, phoneNumberFromJid, safePhoneJid } from "./output-conversation-auth.js";
 import { AppSettingsStore } from "./settings.js";
+import { SolPluginClient } from "./sol-plugin-client.js";
 import { BridgeStore } from "./store.js";
 import {
   detectWhatsappMessageType,
@@ -154,6 +155,7 @@ export class WhatsappManager {
     private readonly store: BridgeStore,
     private readonly settingsStore?: AppSettingsStore,
     private readonly conversationStore?: OutputConversationStore,
+    private readonly solPlugin?: SolPluginClient,
   ) {}
 
   getStatus(accountId: string): RuntimeStatus {
@@ -442,8 +444,21 @@ export class WhatsappManager {
           displayName: socket.user?.name ?? undefined,
           lastError: undefined,
         }).catch((error) => console.error(`[whatsapp:${account.id}] account state update failed`, error));
+        if (account.role === "input" && this.solPlugin) {
+          const linkedAccount = {
+            ...account,
+            phoneJid: socket.user?.id ?? account.phoneJid,
+            displayName: socket.user?.name ?? account.displayName,
+          };
+          void this.solPlugin.setStatus(linkedAccount, "connected", new Date().toISOString()).catch((error) => {
+            this.solPlugin?.log("warn", `Could not mark ${account.label} connected in SOL: ${error instanceof Error ? error.message : String(error)}`);
+          });
+        }
       }
       if (update.connection === "close") {
+        if (account.role === "input" && this.solPlugin) {
+          void this.solPlugin.setStatus(account, "disconnected").catch(() => undefined);
+        }
         void this.handleClose(account, runtime, generation, update.lastDisconnect?.error);
       }
     });
@@ -578,6 +593,15 @@ export class WhatsappManager {
       runtime.storedMessages += 1;
       runtime.updatedAt = new Date();
     }
+    if (this.solPlugin) {
+      const sourceAccount = { ...account, phoneJid: account.phoneJid ?? runtime.phoneJid };
+      await this.solPlugin.ingestWhatsappMessage(sourceAccount, stored).catch((error) => {
+        runtime.lastError = `SOL ingestion: ${error instanceof Error ? error.message : String(error)}`;
+        runtime.updatedAt = new Date();
+        this.solPlugin?.reportHealth("degraded", { accountId: account.id, reason: runtime.lastError });
+        this.solPlugin?.log("warn", `SOL ingestion failed for ${account.label}: ${runtime.lastError}`);
+      });
+    }
   }
 
   private async handleClose(
@@ -624,5 +648,6 @@ export class WhatsappManager {
     await runtime.queue.catch(() => undefined);
     runtime.state = "idle";
     runtime.updatedAt = new Date();
+    if (this.solPlugin) await this.solPlugin.setDisconnectedByAccountId(runtime.accountId).catch(() => undefined);
   }
 }

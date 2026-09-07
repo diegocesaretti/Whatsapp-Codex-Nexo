@@ -17,3 +17,15 @@ jobs:
       - run: pnpm install
       - run: pnpm test
       - run: pnpm typecheck
+      - run: pnpm build
+      - name: Verify SOL plugin package can be assembled
+        run: |
+          rm -rf .solplugin-stage Nexo.solplugin
+          mkdir -p .solplugin-stage
+          cp package.json sol-plugin.json .solplugin-stage/
+          cp -R dist .solplugin-stage/dist
+          cd .solplugin-stage
+          npm install --omit=dev --ignore-scripts --no-package-lock
+          zip -qry ../Nexo.solplugin .
+          cd ..
+          test -s Nexo.solplugin

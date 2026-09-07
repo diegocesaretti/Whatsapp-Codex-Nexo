@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "id": "nexo-whatsapp",
+  "name": "Nexo · WhatsApp",
+  "version": "0.8.0",
+  "description": "WhatsApp input/output connector for SOL with multiple accounts and persistent local session data.",
+  "runtime": "node",
+  "entry": "dist/index.js",
+  "args": [],
+  "autoStart": true,
+  "restartPolicy": "on-failure",
+  "capabilities": [
+    "input.whatsapp",
+    "output.whatsapp",
+    "tool.whatsapp"
+  ],
+  "permissions": [
+    "input.register",
+    "input.write",
+    "input.status",
+    "network.internet",
+    "filesystem.plugin-data"
+  ],
+  "settings": [
+    {
+      "key": "port",
+      "label": "Puerto local de Nexo",
+      "type": "number",
+      "description": "Puerto HTTP local usado por la interfaz/API interna de Nexo.",
+      "env": "NEXO_WHATSAPP_PORT",
+      "required": false,
+      "default": 3210,
+      "min": 1024,
+      "max": 65535
+    }
+  ],
+  "distribution": {
+    "type": "github-release",
+    "asset": "Nexo.solplugin",
+    "tag": "sol-plugin-latest"
+  }
+}
