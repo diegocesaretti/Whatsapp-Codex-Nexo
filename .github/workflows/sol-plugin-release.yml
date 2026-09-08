@@ -7,6 +7,7 @@ on:
       - src/**
       - package.json
       - sol-plugin.json
+      - scripts/prune-solplugin.mjs
       - .github/workflows/sol-plugin-release.yml
   workflow_dispatch:
 
@@ -26,7 +27,7 @@ jobs:
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm build
-      - name: Build Nexo.solplugin
+      - name: Build compact Nexo.solplugin
         run: |
           rm -rf .solplugin-stage Nexo.solplugin
           mkdir -p .solplugin-stage
@@ -34,14 +35,23 @@ jobs:
           cp -R dist .solplugin-stage/dist
           cd .solplugin-stage
           npm install --omit=dev --ignore-scripts --no-package-lock
-          zip -qry ../Nexo.solplugin .
+          node ../scripts/prune-solplugin.mjs node_modules
+          node --input-type=module -e "await Promise.all([import('baileys'), import('pg'), import('pino'), import('qrcode'), import('zod/v4'), import('@modelcontextprotocol/server'), import('@modelcontextprotocol/server/stdio')]); console.log('SOL plugin runtime imports OK')"
+          find . -type f -printf '%P\n' | LC_ALL=C sort | zip -q ../Nexo.solplugin -@
           cd ..
+          entries=$(zipinfo -1 Nexo.solplugin | wc -l | tr -d ' ')
+          echo "Nexo.solplugin entries: $entries"
+          if [ "$entries" -gt 2000 ]; then
+            echo "Nexo.solplugin exceeds SOL's 2000-entry package limit"
+            exit 1
+          fi
+          test "$(zipinfo -1 Nexo.solplugin | grep -c '^sol-plugin.json$')" -eq 1
       - name: Publish rolling SOL plugin release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete sol-plugin-latest -y --cleanup-tag || true
-          gh release create sol-plugin-latest Nexo.solplugin --target "$GITHUB_SHA" --title "Nexo · WhatsApp SOL plugin" --notes "Rolling SOL plugin package built from main."
+          gh release create sol-plugin-latest Nexo.solplugin --target "$GITHUB_SHA" --title "Nexo · WhatsApp SOL plugin" --notes "Rolling compact SOL plugin package built from main."
       - name: Upload optional Actions artifact
         continue-on-error: true
         uses: actions/upload-artifact@v4

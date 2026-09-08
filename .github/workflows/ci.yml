@@ -18,7 +18,7 @@ jobs:
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm build
-      - name: Verify SOL plugin package can be assembled
+      - name: Verify compact SOL plugin package can be assembled
         run: |
           rm -rf .solplugin-stage Nexo.solplugin
           mkdir -p .solplugin-stage
@@ -26,6 +26,15 @@ jobs:
           cp -R dist .solplugin-stage/dist
           cd .solplugin-stage
           npm install --omit=dev --ignore-scripts --no-package-lock
-          zip -qry ../Nexo.solplugin .
+          node ../scripts/prune-solplugin.mjs node_modules
+          node --input-type=module -e "await Promise.all([import('baileys'), import('pg'), import('pino'), import('qrcode'), import('zod/v4'), import('@modelcontextprotocol/server'), import('@modelcontextprotocol/server/stdio')]); console.log('SOL plugin runtime imports OK')"
+          find . -type f -printf '%P\n' | LC_ALL=C sort | zip -q ../Nexo.solplugin -@
           cd ..
           test -s Nexo.solplugin
+          entries=$(zipinfo -1 Nexo.solplugin | wc -l | tr -d ' ')
+          echo "Nexo.solplugin entries: $entries"
+          if [ "$entries" -gt 2000 ]; then
+            echo "Nexo.solplugin exceeds SOL's 2000-entry package limit"
+            exit 1
+          fi
+          test "$(zipinfo -1 Nexo.solplugin | grep -c '^sol-plugin.json$')" -eq 1
