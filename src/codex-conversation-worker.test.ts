@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { AttachmentInbox, type InboxAttachment } from "./attachment-inbox.js";
-import { buildCodexWhatsappPrompt, parseCodexJsonl } from "./codex-conversation-worker.js";
+import { buildCodexWhatsappPrompt, codexRequiresUpgrade, parseCodexJsonl } from "./codex-conversation-worker.js";
 import type { OutputConversationMessage } from "./types.js";
 
 function message(id: string, text: string | undefined, direction: "inbound" | "outbound", at: string): OutputConversationMessage {
@@ -29,10 +29,17 @@ test("parseCodexJsonl extracts thread id and last agent message", () => {
   assert.equal(parsed.answer, "final answer");
 });
 
-test("Codex worker never passes the unsupported --color flag", async () => {
+test("Codex worker executes the exact detected CLI and never passes unsupported --color", async () => {
   const source = await readFile(new URL("./codex-conversation-worker.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /--color/);
-  assert.match(source, /--json --skip-git-repo-check -/);
+  assert.match(source, /spawn\(options\.cliPath, args/);
+  assert.match(source, /"--json", "--skip-git-repo-check", "-"/);
+  assert.doesNotMatch(source, /`codex \$\{winProfile\}/);
+});
+
+test("Codex worker recognizes CLI upgrade errors for one-shot rediscovery", () => {
+  assert.equal(codexRequiresUpgrade(new Error("The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.")), true);
+  assert.equal(codexRequiresUpgrade(new Error("network temporarily unavailable")), false);
 });
 
 test("worker prompt marks new allowlisted WhatsApp text as authenticated human input", () => {
