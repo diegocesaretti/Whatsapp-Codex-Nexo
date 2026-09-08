@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { AttachmentInbox, type InboxAttachment } from "./attachment-inbox.js";
 import { transcribeInboxAudio } from "./audio-transcriber.js";
-import { environmentWithCodexPath, resolveCodexCli, type CodexCliStatus } from "./codex-cli.js";
+import { discoverDesktopCodexBundles, environmentWithCodexPath, resolveCodexCli, type CodexCliStatus } from "./codex-cli.js";
 import { CodexWorkerStateStore } from "./codex-worker-state.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { AppSettingsStore } from "./settings.js";
@@ -58,6 +58,22 @@ function codexConfigArgs(profile: CodexWorkerProfile): string[] {
     "-c", `model_reasoning_effort=${JSON.stringify(profile.reasoningEffort)}`,
     "-c", `model_verbosity=${JSON.stringify(profile.verbosity)}`,
   ];
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function codexRequiresUpgrade(error: unknown): boolean {
+  return /requires a newer version of Codex|please upgrade to the latest app or CLI/i.test(errorText(error));
+}
+
+function terminalCodexFailure(error: unknown): boolean {
+  const text = errorText(error);
+  return codexRequiresUpgrade(error)
+    || /invalid_request_error/i.test(text)
+    || /model metadata .* not found/i.test(text)
+    || /unknown model|unsupported model|model .* unavailable/i.test(text);
 }
 
 export function parseCodexJsonl(stdout: string): CodexExecResult {
@@ -144,10 +160,6 @@ function validThreadId(value: string | undefined): value is string {
   return Boolean(value && /^[0-9a-f-]{20,80}$/i.test(value));
 }
 
-function windowsQuote(value: string): string {
-  return `"${value.replace(/"/g, "")}"`;
-}
-
 function executeCodex(
   prompt: string,
   existingThread: string | undefined,
@@ -158,21 +170,14 @@ function executeCodex(
     const imagePaths = [...new Set(options.imagePaths ?? [])].slice(0, 8);
     const imageArgs = imagePaths.flatMap((path) => ["--image", path]);
     const profileArgs = codexConfigArgs(options.profile);
-    // -c is a top-level Codex override. Putting the profile before `exec`
-    // makes it apply equally to new and resumed threads and avoids inheriting
-    // an unrelated global desktop model such as an experimental Astra model.
-    const directArgs = validThread
+    // Use the exact detected executable. Older builds delegated through cmd.exe and the bare
+    // `codex` command, which could resolve a different/stale PATH installation than the one
+    // shown in Nexo > Codex.
+    const args = validThread
       ? [...profileArgs, "exec", "resume", validThread, ...imageArgs, "--json", "--skip-git-repo-check", "-"]
       : [...profileArgs, "exec", ...imageArgs, "--json", "--skip-git-repo-check", "-"];
-    const command = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : options.cliPath;
-    const resume = validThread ? ` resume ${validThread}` : "";
-    const winImages = imagePaths.map((path) => ` --image ${windowsQuote(path)}`).join("");
-    const winProfile = codexConfigArgs(options.profile).map((arg) => windowsQuote(arg)).join(" ");
-    const args = process.platform === "win32"
-      ? ["/d", "/s", "/c", `codex ${winProfile} exec${resume}${winImages} --json --skip-git-repo-check -`]
-      : directArgs;
 
-    const child = spawn(command, args, {
+    const child = spawn(options.cliPath, args, {
       cwd: options.cwd,
       windowsHide: true,
       env: environmentWithCodexPath(options.cliPath),
@@ -205,7 +210,7 @@ function executeCodex(
       }
     });
     child.stderr.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-8000); });
-    child.on("error", (error) => finish(new Error(`Could not start Codex CLI: ${error.message}`)));
+    child.on("error", (error) => finish(new Error(`Could not start Codex CLI ${options.cliPath}: ${error.message}`)));
     child.on("close", (code) => {
       if (settled) return;
       if (code !== 0) {
@@ -319,7 +324,7 @@ export class CodexConversationWorker {
         break;
       }
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
+      this.lastError = errorText(error);
       console.error("[codex-worker] tick failed", error);
     } finally {
       this.running = false;
@@ -343,7 +348,7 @@ export class CodexConversationWorker {
         attachment.transcriptionError = undefined;
         await this.attachmentInbox.setTranscription(attachment.id, result.text, result.model);
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
+        const detail = errorText(error);
         attachment.transcriptionError = detail;
         await this.attachmentInbox.setTranscriptionError(attachment.id, detail).catch(() => undefined);
       }
@@ -357,7 +362,7 @@ export class CodexConversationWorker {
     let presenceTimer: NodeJS.Timeout | undefined;
     let presenceStarted = false;
     try {
-      const cli = await this.refreshCodexCli(false);
+      let cli = await this.refreshCodexCli(false);
       if (!cli.available || !cli.path) throw new Error(cli.error || "Codex CLI no encontrado");
 
       await this.manager.beginOutputConversationActivity(newest.peerJid).then(() => { presenceStarted = true; }).catch(() => undefined);
@@ -378,13 +383,32 @@ export class CodexConversationWorker {
       const imagePaths = settings.multimodal.attachImagesToCodex && this.attachmentInbox
         ? attachments.filter((item) => item.kind === "image").map((item) => this.attachmentInbox!.absolutePath(item))
         : [];
-      const result = await executeCodex(prompt, existingThread, {
-        cwd: configuredCwd.trim() || process.cwd(),
-        timeoutMs: timeoutSeconds * 1000,
-        cliPath: cli.path,
-        imagePaths,
-        profile: codexWorkerProfile(),
-      });
+      const cwd = configuredCwd.trim() || process.cwd();
+      const profile = codexWorkerProfile();
+      let result: CodexExecResult;
+      try {
+        result = await executeCodex(prompt, existingThread, {
+          cwd,
+          timeoutMs: timeoutSeconds * 1000,
+          cliPath: cli.path,
+          imagePaths,
+          profile,
+        });
+      } catch (firstError) {
+        if (!codexRequiresUpgrade(firstError)) throw firstError;
+        console.warn(`[codex-worker:${peerPhone}] detected stale Codex CLI; refreshing and retrying once`);
+        const bundles = await discoverDesktopCodexBundles().catch(() => []);
+        cli = await this.refreshCodexCli(true);
+        const retryPath = bundles.find((bundle) => bundle.complete)?.cliPath || cli.path;
+        if (!retryPath) throw firstError;
+        result = await executeCodex(prompt, existingThread, {
+          cwd,
+          timeoutMs: timeoutSeconds * 1000,
+          cliPath: retryPath,
+          imagePaths,
+          profile,
+        });
+      }
       if (!result.answer.trim()) throw new Error("Codex returned an empty final answer");
       if (result.threadId) {
         await this.state.setThreadId(peerPhone, result.threadId);
@@ -408,8 +432,22 @@ export class CodexConversationWorker {
       const attempts = previous + 1;
       const backoff = Math.min(300_000, 5000 * 2 ** Math.min(attempts - 1, 6));
       this.failures.set(newest.id, { attempts, nextAt: Date.now() + backoff });
-      this.lastError = error instanceof Error ? error.message : String(error);
+      this.lastError = errorText(error);
       console.error(`[codex-worker:${peerPhone}] failed attempt ${attempts}`, error);
+
+      // Do not leave an authorized human watching repeated "typing" cycles forever. Permanent
+      // model/CLI errors are reported immediately; other failures get three attempts first.
+      if (terminalCodexFailure(error) || attempts >= 3) {
+        const sent = await this.manager.replyToOutputConversationMessage({
+          inboundMessageId: newest.id,
+          text: "No pude completar esta respuesta porque Codex tuvo un error local. Revisá Nexo > Codex para ver el detalle; Nexo ya detuvo los reintentos automáticos de este mensaje.",
+          reason: "Codex resident worker failure notice",
+        }).then(() => true).catch(() => false);
+        if (sent) {
+          if (inbound.length > 1) await this.conversationStore.acknowledge(inbound.slice(0, -1).map((message) => message.id)).catch(() => undefined);
+          this.failures.delete(newest.id);
+        }
+      }
     } finally {
       if (presenceTimer) clearInterval(presenceTimer);
       if (presenceStarted) await this.manager.endOutputConversationActivity(newest.peerJid).catch(() => undefined);
