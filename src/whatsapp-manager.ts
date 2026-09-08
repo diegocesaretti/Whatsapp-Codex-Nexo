@@ -210,6 +210,7 @@ export class WhatsappManager {
   }
 
   async logout(accountId: string): Promise<void> {
+    const account = await this.store.getAccount(accountId);
     const runtime = this.sessions.get(accountId);
     if (runtime) {
       runtime.manualStop = true;
@@ -219,7 +220,17 @@ export class WhatsappManager {
       await runtime.queue.catch(() => undefined);
       this.sessions.delete(accountId);
     }
+    if (account?.role === "input" && this.solPlugin) {
+      await this.solPlugin.unregisterInput(account).catch((error) => {
+        // Never make local account removal depend on SOL uptime. Old/stale
+        // host projections can be removed later from SOL > Conexiones.
+        this.solPlugin?.log("warn", `Could not unregister deleted account ${account.label} from SOL: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
     await this.store.deleteAccount(accountId);
+    if (this.settingsStore) {
+      await this.settingsStore.syncInputIdentities(await this.store.listAccounts()).catch(() => undefined);
+    }
   }
 
   async stopAll(): Promise<void> {
