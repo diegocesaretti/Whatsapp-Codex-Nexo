@@ -1,3 +1,4 @@
+import { ensureAdvancedSettingsPanel } from "./ui-v5-advanced.js";
 import { augmentAdminPageV5 } from "./ui-v5-extras.js";
 import { renderAdminPageV5 } from "./ui-v5.js";
 
@@ -9,5 +10,5 @@ export function renderAdminPage(): string {
   const base = renderAdminPageV5()
     .replace("replace(/D/g,'')", "replace(/\\D/g,'')")
     .replace("split(/s+/)[0]", "split(/\\s+/)[0]");
-  return augmentAdminPageV5(base);
+  return ensureAdvancedSettingsPanel(augmentAdminPageV5(base));
 }
