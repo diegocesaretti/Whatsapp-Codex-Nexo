@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "nexo-whatsapp",
   "name": "Nexo · WhatsApp",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "WhatsApp input/output connector for SOL with multiple accounts, people identities and persistent local session data.",
   "runtime": "node",
   "entry": "dist/index.js",
