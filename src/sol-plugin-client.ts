@@ -1,3 +1,4 @@
+import type { NexoIdentity } from "./settings.js";
 import type { AccountRecord, StoredMessage } from "./types.js";
 
 interface SolInputRegistration {
@@ -82,6 +83,31 @@ export class SolPluginClient {
     await this.request(`/v1/plugin-api/inputs/${sourceAccountId}/status`, { status: "disconnected" });
   }
 
+  /**
+   * Publish Nexo's explicit people model to SOL. These are identity assertions only:
+   * Nexo role/codexConversationEnabled remain Nexo policy and never become SOL member
+   * roles or access grants. Linking to a canonical SOL Person is done by SOL's People UI.
+   */
+  async syncNexoIdentities(identities: NexoIdentity[]): Promise<void> {
+    if (!this.enabled) return;
+    for (const identity of identities) {
+      await this.request("/v1/plugin-api/identities/person", {
+        externalId: identity.id,
+        label: identity.displayName || identity.nickname || identity.id,
+        autoLinkMember: false,
+        metadata: {
+          identityType: "nexo_whatsapp_person",
+          nickname: identity.nickname,
+          phoneNumbers: identity.phoneNumbers,
+          linkedInputAccountIds: identity.linkedInputAccountIds,
+          nexoRole: identity.role,
+          codexConversationEnabled: identity.codexConversationEnabled,
+          source: identity.source,
+        },
+      });
+    }
+  }
+
   async ingestWhatsappMessage(account: AccountRecord, message: StoredMessage): Promise<void> {
     const sourceAccountId = await this.ensureInput(account);
     if (!sourceAccountId) return;
@@ -127,7 +153,7 @@ export class SolPluginClient {
     const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (!response.ok) {
       const reason = typeof payload.error === "string" ? payload.error : `HTTP ${response.status}`;
-      throw new Error(`SOL Plugin Input API: ${reason}`);
+      throw new Error(`SOL Plugin API: ${reason}`);
     }
     return payload as T;
   }
