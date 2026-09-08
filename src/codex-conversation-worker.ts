@@ -8,6 +8,18 @@ import { AppSettingsStore } from "./settings.js";
 import type { OutputConversationMessage } from "./types.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 
+const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
+const DEFAULT_REASONING_EFFORT = "low";
+const DEFAULT_VERBOSITY = "low";
+const REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
+const VERBOSITIES = new Set(["low", "medium", "high"]);
+
+export interface CodexWorkerProfile {
+  model: string;
+  reasoningEffort: string;
+  verbosity: string;
+}
+
 export interface CodexWorkerStatus {
   started: boolean;
   running: boolean;
@@ -16,12 +28,36 @@ export interface CodexWorkerStatus {
   lastSuccessAt?: string;
   lastError?: string;
   sessionCount: number;
+  profile: CodexWorkerProfile;
   codexCli: CodexCliStatus;
 }
 
 export interface CodexExecResult {
   threadId?: string;
   answer: string;
+}
+
+function safeModel(value: string | undefined): string {
+  const clean = value?.trim() || DEFAULT_CODEX_MODEL;
+  return /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,99}$/.test(clean) ? clean : DEFAULT_CODEX_MODEL;
+}
+
+export function codexWorkerProfile(env: NodeJS.ProcessEnv = process.env): CodexWorkerProfile {
+  const reasoning = env.NEXO_CODEX_REASONING_EFFORT?.trim().toLowerCase() || DEFAULT_REASONING_EFFORT;
+  const verbosity = env.NEXO_CODEX_VERBOSITY?.trim().toLowerCase() || DEFAULT_VERBOSITY;
+  return {
+    model: safeModel(env.NEXO_CODEX_MODEL),
+    reasoningEffort: REASONING_EFFORTS.has(reasoning) ? reasoning : DEFAULT_REASONING_EFFORT,
+    verbosity: VERBOSITIES.has(verbosity) ? verbosity : DEFAULT_VERBOSITY,
+  };
+}
+
+function codexConfigArgs(profile: CodexWorkerProfile): string[] {
+  return [
+    "-c", `model=${JSON.stringify(profile.model)}`,
+    "-c", `model_reasoning_effort=${JSON.stringify(profile.reasoningEffort)}`,
+    "-c", `model_verbosity=${JSON.stringify(profile.verbosity)}`,
+  ];
 }
 
 export function parseCodexJsonl(stdout: string): CodexExecResult {
@@ -115,20 +151,25 @@ function windowsQuote(value: string): string {
 function executeCodex(
   prompt: string,
   existingThread: string | undefined,
-  options: { cwd: string; timeoutMs: number; cliPath: string; imagePaths?: string[] },
+  options: { cwd: string; timeoutMs: number; cliPath: string; imagePaths?: string[]; profile: CodexWorkerProfile },
 ): Promise<CodexExecResult> {
   return new Promise((resolve, reject) => {
     const validThread = validThreadId(existingThread) ? existingThread : undefined;
     const imagePaths = [...new Set(options.imagePaths ?? [])].slice(0, 8);
     const imageArgs = imagePaths.flatMap((path) => ["--image", path]);
+    const profileArgs = codexConfigArgs(options.profile);
+    // -c is a top-level Codex override. Putting the profile before `exec`
+    // makes it apply equally to new and resumed threads and avoids inheriting
+    // an unrelated global desktop model such as an experimental Astra model.
     const directArgs = validThread
-      ? ["exec", "resume", validThread, ...imageArgs, "--json", "--skip-git-repo-check", "-"]
-      : ["exec", ...imageArgs, "--json", "--skip-git-repo-check", "-"];
+      ? [...profileArgs, "exec", "resume", validThread, ...imageArgs, "--json", "--skip-git-repo-check", "-"]
+      : [...profileArgs, "exec", ...imageArgs, "--json", "--skip-git-repo-check", "-"];
     const command = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : options.cliPath;
     const resume = validThread ? ` resume ${validThread}` : "";
     const winImages = imagePaths.map((path) => ` --image ${windowsQuote(path)}`).join("");
+    const winProfile = codexConfigArgs(options.profile).map((arg) => windowsQuote(arg)).join(" ");
     const args = process.platform === "win32"
-      ? ["/d", "/s", "/c", `codex exec${resume}${winImages} --json --skip-git-repo-check -`]
+      ? ["/d", "/s", "/c", `codex ${winProfile} exec${resume}${winImages} --json --skip-git-repo-check -`]
       : directArgs;
 
     const child = spawn(command, args, {
@@ -234,6 +275,7 @@ export class CodexConversationWorker {
       lastSuccessAt: this.lastSuccessAt,
       lastError: this.lastError,
       sessionCount: this.sessionCount,
+      profile: codexWorkerProfile(),
       codexCli: this.codexCliStatus,
     };
   }
@@ -341,6 +383,7 @@ export class CodexConversationWorker {
         timeoutMs: timeoutSeconds * 1000,
         cliPath: cli.path,
         imagePaths,
+        profile: codexWorkerProfile(),
       });
       if (!result.answer.trim()) throw new Error("Codex returned an empty final answer");
       if (result.threadId) {

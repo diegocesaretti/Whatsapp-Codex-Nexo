@@ -50,6 +50,17 @@ export class SolPluginClient {
     return response.input.id;
   }
 
+  async unregisterInput(account: AccountRecord): Promise<void> {
+    if (!this.enabled || account.role !== "input") return;
+    // ensureInput intentionally resolves an existing projection when the
+    // process cache was lost after a restart. The host endpoint is idempotent
+    // from the plugin's point of view and deletes the SOL projection + cascades.
+    const sourceAccountId = this.sourceAccounts.get(account.id) ?? await this.ensureInput(account);
+    if (!sourceAccountId) return;
+    await this.request(`/v1/plugin-api/inputs/${sourceAccountId}`, undefined, "DELETE");
+    this.sourceAccounts.delete(account.id);
+  }
+
   async setStatus(
     account: AccountRecord,
     status: "connected" | "disconnected" | "error",
@@ -98,15 +109,19 @@ export class SolPluginClient {
     });
   }
 
-  private async request<T = Record<string, unknown>>(path: string, body: Record<string, unknown>): Promise<T> {
+  private async request<T = Record<string, unknown>>(
+    path: string,
+    body?: Record<string, unknown>,
+    method: "POST" | "DELETE" = "POST",
+  ): Promise<T> {
     if (!this.token) throw new Error("SOL plugin token is unavailable");
     const response = await fetch(`${this.baseUrl}${path}`, {
-      method: "POST",
+      method,
       headers: {
         authorization: `Bearer ${this.token}`,
-        "content-type": "application/json",
+        ...(body ? { "content-type": "application/json" } : {}),
       },
-      body: JSON.stringify(body),
+      ...(body ? { body: JSON.stringify(body) } : {}),
       signal: AbortSignal.timeout(10_000),
     });
     const payload = await response.json().catch(() => ({})) as Record<string, unknown>;

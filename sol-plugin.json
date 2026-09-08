@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "nexo-whatsapp",
   "name": "Nexo · WhatsApp",
-  "version": "0.8.0",
-  "description": "WhatsApp input/output connector for SOL with multiple accounts and persistent local session data.",
+  "version": "0.9.1",
+  "description": "WhatsApp input/output connector for SOL with multiple accounts, people identities and persistent local session data.",
   "runtime": "node",
   "entry": "dist/index.js",
   "args": [],
@@ -18,6 +18,7 @@
     "input.register",
     "input.write",
     "input.status",
+    "input.unregister",
     "network.internet",
     "filesystem.plugin-data"
   ],
@@ -32,6 +33,46 @@
       "default": 3210,
       "min": 1024,
       "max": 65535
+    },
+    {
+      "key": "codexModel",
+      "label": "Modelo de Codex",
+      "type": "text",
+      "description": "Modelo usado por el worker residente de WhatsApp. Nexo no hereda el modelo global de Codex.",
+      "env": "NEXO_CODEX_MODEL",
+      "required": false,
+      "default": "gpt-5.6-sol"
+    },
+    {
+      "key": "codexReasoningEffort",
+      "label": "Esfuerzo de razonamiento",
+      "type": "select",
+      "description": "Low es el perfil recomendado para WhatsApp: conserva planificación y uso de herramientas con menor consumo de tokens.",
+      "env": "NEXO_CODEX_REASONING_EFFORT",
+      "required": false,
+      "default": "low",
+      "options": [
+        { "value": "none", "label": "None · mínimo consumo" },
+        { "value": "low", "label": "Low · recomendado" },
+        { "value": "medium", "label": "Medium" },
+        { "value": "high", "label": "High" },
+        { "value": "xhigh", "label": "Extra high" },
+        { "value": "max", "label": "Max" }
+      ]
+    },
+    {
+      "key": "codexVerbosity",
+      "label": "Extensión de las respuestas",
+      "type": "select",
+      "description": "Low mantiene las respuestas de WhatsApp breves y reduce tokens de salida.",
+      "env": "NEXO_CODEX_VERBOSITY",
+      "required": false,
+      "default": "low",
+      "options": [
+        { "value": "low", "label": "Low · recomendado" },
+        { "value": "medium", "label": "Medium" },
+        { "value": "high", "label": "High" }
+      ]
     }
   ],
   "distribution": {
