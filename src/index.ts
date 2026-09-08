@@ -24,13 +24,16 @@ await attachmentInbox.init();
 await attachmentInbox.cleanup(settings.multimodal.retentionDays).catch(() => undefined);
 
 const solPlugin = new SolPluginClient();
+await solPlugin.syncNexoIdentities(settings.outputConversation.identities).catch((error) => {
+  solPlugin.log("warn", `Could not sync Nexo people to SOL at startup: ${error instanceof Error ? error.message : String(error)}`);
+});
 const manager = new WhatsappManager(store, settingsStore, conversationStore, solPlugin);
 installMultimodalCapture(manager, settingsStore, attachmentInbox);
 if (settings.autoConnectLinkedAccounts) await manager.startLinkedAccounts();
 
 const summarizer = new WhatsappSummarizer(store, settingsStore);
 const codexWorker = new CodexConversationWorker(config.dataDir, settingsStore, conversationStore, manager, attachmentInbox);
-const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore, codexWorker);
+const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore, codexWorker, solPlugin);
 server.listen(config.port, config.host, () => {
   console.log(`WhatsApp Codex Nexo listening on http://${config.host}:${config.port}`);
   console.log(`Storage: ${store.storageMode}${store.storageMode === "neon" ? ` (schema whatsapp_nexo · source ${config.databaseSource})` : " (.data local)"}`);
