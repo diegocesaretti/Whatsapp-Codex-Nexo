@@ -19,14 +19,14 @@ const removableDirectoryNames = new Set([
   "benchmarks",
 ]);
 
-const removableDocPrefixes = [
+const removableDocNames = new Set([
   "readme",
   "changelog",
   "changes",
   "history",
   "authors",
   "contributors",
-];
+]);
 
 function isLicenseFile(name) {
   const lower = name.toLowerCase();
@@ -37,7 +37,8 @@ function isRemovableFile(path) {
   const name = basename(path).toLowerCase();
   if (isLicenseFile(name)) return false;
   if (name.endsWith(".d.ts") || name.endsWith(".map") || name.endsWith(".md") || name.endsWith(".markdown")) return true;
-  if (removableDocPrefixes.some((prefix) => name.startsWith(prefix))) return true;
+  if (removableDocNames.has(name)) return true;
+  if (/^(readme|changelog|changes|history|authors|contributors)\.(txt|rst|html)$/.test(name)) return true;
   if (/\.(test|spec)\.[cm]?[jt]s$/.test(name)) return true;
   return false;
 }
