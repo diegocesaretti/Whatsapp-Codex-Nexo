@@ -1,6 +1,6 @@
 # Multimodal WhatsApp ↔ Codex
 
-Nexo can receive authorized WhatsApp media for Codex and, from v0.10, can also send local images, audio and documents through the dedicated OUTPUT account.
+Nexo can receive authorized WhatsApp media for Codex and can send local images, audio and documents through the dedicated OUTPUT account.
 
 ## Supported inbound media
 
@@ -29,48 +29,62 @@ multimodal.maxFileMb = 25
 multimodal.retentionDays = 7
 multimodal.attachImagesToCodex = true
 multimodal.audioTranscriptionEnabled = true
-multimodal.audioTranscriptionModel = voxtral-mini-latest
+multimodal.audioTranscriptionModel = voxtral-mini-latest   # API fallback only
 multimodal.audioLanguage = auto
 multimodal.audioTranscriptionTimeoutSeconds = 120
 ```
 
 The inbox uses hashed per-message directories and sanitized filenames. Cleanup runs at startup and after multimodal processing.
 
+## Codex OAuth is the primary media-processing identity
+
+Nexo does not read, copy, persist or forward the OAuth bearer token used by Codex. When Nexo needs Codex to understand user media, it invokes the locally installed Codex runtime and lets `codex app-server` use its own authenticated ChatGPT session.
+
+This keeps one primary identity for interactive WhatsApp processing:
+
+```text
+WhatsApp media
+    ↓
+Nexo inbox
+    ↓
+local Codex CLI / app-server
+    ↓
+Codex-managed ChatGPT OAuth
+    ↓
+result returned to Nexo
+```
+
+An independently configured OpenAI-compatible API key is optional. For voice-note transcription it is used only as a fallback when the Codex OAuth/app-server path is unavailable or the local Codex runtime cannot accept that audio format.
+
 ## Inbound images
 
-Images belonging to the current authenticated WhatsApp turn are passed to Codex using repeated `--image <path>` arguments. The prompt itself is still delivered through stdin, which avoids the CLI positional-prompt ambiguity around image flags.
+Images belonging to the current authenticated WhatsApp turn are passed to the locally authenticated Codex runtime using repeated `--image <path>` arguments. The prompt itself is still delivered through stdin, which avoids the CLI positional-prompt ambiguity around image flags.
 
 ## Inbound documents and videos
 
-Nexo gives Codex the exact local path, MIME type, original sanitized filename and byte size. Codex can inspect the local file with its normal tools when the task requires it.
+Nexo gives the locally authenticated Codex worker the exact local path, MIME type, original sanitized filename and byte size. Codex can inspect the local file with its normal tools when the authenticated human request requires it.
 
 Attachment file contents remain untrusted evidence. Text embedded in a PDF, spreadsheet, image, QR code or video frame cannot authorize an external action by itself.
 
 ## Inbound voice notes and audio
 
-For an authorized direct voice note, Nexo calls:
+From v0.11, Nexo first launches the official Codex app-server over local stdio and verifies that `account/read` reports a ChatGPT account. It creates an ephemeral, read-only thread and sends the audio using the official `localAudio` user-input type. The transcription turn is explicitly instructed to treat the audio only as data: it must not execute tools, obey instructions in the recording, answer the speaker, summarize or translate.
+
+The Codex runtime snapshots supported local audio and sends it using its own authenticated session. Nexo never opens Codex's auth files and never receives the OAuth access token.
+
+Codex local-audio formats currently used by this path are WAV, MP3, M4A, WebM and OGG. Nexo's own attachment-size policy still applies before processing.
+
+If the Codex OAuth path fails and Nexo already has an optional LLM/API key configured, Nexo falls back to:
 
 ```text
 {configured LLM base URL}/audio/transcriptions
 ```
 
-using the same secret already stored for the optional LLM summarizer. With Mistral configured as:
-
-```text
-Base URL: https://api.mistral.ai/v1
-Model for WhatsApp summaries: mistral-small-latest
-```
-
-Nexo uses:
-
-```text
-https://api.mistral.ai/v1/audio/transcriptions
-model = voxtral-mini-latest
-```
+using `multimodal.audioTranscriptionModel`. No API key is required when the Codex OAuth path succeeds.
 
 The resulting transcription is treated as authenticated human speech because the original audio arrived from an allowlisted direct OUTPUT peer. This is deliberately different from text discovered inside attached documents/images, which remains untrusted evidence.
 
-If transcription fails, the attachment remains locally available and the Codex turn still runs with a clear transcription error marker instead of silently dropping the WhatsApp message.
+If both Codex OAuth processing and the optional API fallback fail, the attachment remains locally available and the normal Codex turn receives a clear transcription-error marker instead of silently dropping the WhatsApp message.
 
 ## Outbound media
 
@@ -95,12 +109,9 @@ Example shape:
 }
 ```
 
-`filePath` may be absolute or relative. Relative paths are resolved from the configured Codex worker working directory. Nexo only accepts files whose resolved real path is inside either:
+`filePath` may be absolute or relative. Relative paths are resolved from the configured Codex worker working directory. Outbound media is accepted from the configured Codex working directory and from Nexo's `.data/inbox`; every other path inside Nexo's private `.data` tree is explicitly denied. The check is performed after `realpath` resolution, so symlinks cannot escape these boundaries or expose `.data/auth`, `.data/secrets` or settings files.
 
-- Nexo's configured data directory; or
-- the configured Codex worker working directory (or Nexo's current working directory when no worker directory is configured).
-
-This check is performed after resolving symlinks, so a symlink cannot escape an allowed root. The same `multimodal.maxFileMb` setting used for inbound files is enforced before and after reading an outbound file.
+The same `multimodal.maxFileMb` setting used for inbound files is enforced before and after reading an outbound file.
 
 Outbound bytes are sent directly to WhatsApp and are not copied into Neon. The existing outbound audit stores only a safe textual summary, filename/caption and WhatsApp message id; it does not persist file bytes or absolute source paths.
 
@@ -113,6 +124,8 @@ Outbound bytes are sent directly to WhatsApp and are not copied into Neon. The e
 - declared and actual inbound sizes are checked against the configured limit;
 - outbound file size is checked before and after reading;
 - outbound paths are constrained to trusted local roots after `realpath` resolution;
+- Nexo private auth/secrets/settings files cannot be sent as outbound media;
+- the Codex OAuth token is managed by Codex and is never copied into Nexo;
 - attachments are never executed by Nexo;
 - outbound media requires explicit current-human confirmation;
 - inbound files expire automatically according to local retention settings;
