@@ -33,7 +33,7 @@ export function codexSolMcpExecConfigArgs(
   return [
     "-c", `${root}.command=${JSON.stringify(nodePath)}`,
     "-c", `${root}.args=${JSON.stringify([serverPath])}`,
-    "-c", `${root}.env=${JSON.stringify({ NEXO_SOL_TOOL_PROXY_URL: proxyUrl })}`,
+    "-c", `${root}.env.NEXO_SOL_TOOL_PROXY_URL=${JSON.stringify(proxyUrl)}`,
     "-c", `${root}.enabled=true`,
     "-c", `${root}.required=true`,
     "-c", `${root}.startup_timeout_sec=15`,
