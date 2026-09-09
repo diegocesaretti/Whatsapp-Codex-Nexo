@@ -58,17 +58,41 @@ function text(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
 }
 
+function modelFacingDescription(tool: RuntimeTool): string {
+  const source = `Provided live through SOL by plugin ${tool.pluginId}. Scope: ${tool.requiredScope}.`;
+  if (tool.pluginId === "home-assistant" || tool.name.startsWith("home_assistant_")) {
+    const actionRule = tool.requiredScope === "actions"
+      ? "Use this action tool only when the CURRENT authenticated WhatsApp message explicitly requests the action. Never infer confirmation from earlier messages."
+      : "This read tool is backed by SOL's event-driven Home Assistant cache and is the authoritative low-latency source for current local device state.";
+    return [
+      "AUTHORITATIVE SOL HOME ASSISTANT TOOL.",
+      tool.description,
+      source,
+      actionRule,
+      "For Home Assistant state, entities, areas, services, or control, use the corresponding home_assistant_* SOL tool BEFORE browser, web search, computer use, shell, or UI automation.",
+      "Do not open a browser to discover or verify a Home Assistant device state when this SOL tool can answer it.",
+    ].join("\n\n");
+  }
+  return [
+    "AUTHORITATIVE SOL PLUGIN TOOL.",
+    tool.description,
+    source,
+    "When this tool directly answers the request, prefer it over browser/web/computer fallbacks.",
+  ].join("\n\n");
+}
+
 async function main(): Promise<void> {
   const listing = await proxy<{ tools?: RuntimeTool[] }>("/tools");
   const tools = Array.isArray(listing.tools) ? listing.tools : [];
+  console.error(`SOL Nexo MCP catalog: ${tools.length} tool(s) · ${tools.map((tool) => tool.name).join(", ")}`);
 
   serveStdio(() => {
-    const server = new McpServer({ name: "sol-nexo-runtime", version: "0.1.0" });
+    const server = new McpServer({ name: "sol-nexo-runtime", version: "0.2.0" });
     for (const tool of tools) {
       server.registerTool(
         tool.name,
         {
-          description: `${tool.description}\n\nProvided through SOL by plugin ${tool.pluginId}. Scope: ${tool.requiredScope}.`,
+          description: modelFacingDescription(tool),
           inputSchema: zodInputSchema(tool.inputSchema),
         },
         async (args: Record<string, unknown>) => {
