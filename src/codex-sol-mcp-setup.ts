@@ -1,11 +1,15 @@
 import { execFile } from "node:child_process";
-import { access } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { resolveCodexCli } from "./codex-cli.js";
 
 const execFileAsync = promisify(execFile);
 export const SOL_NEXO_MCP_NAME = "sol-nexo-runtime";
+const CATALOG_MARKER = ".codex-sol-tool-catalog.sha256";
+const SESSION_FILE = "codex-worker-sessions.json";
 
 export function codexSolMcpAddArgs(proxyUrl: string, nodePath: string, serverPath: string): string[] {
   return [
@@ -13,6 +17,67 @@ export function codexSolMcpAddArgs(proxyUrl: string, nodePath: string, serverPat
     "--env", `NEXO_SOL_TOOL_PROXY_URL=${proxyUrl}`,
     "--", nodePath, serverPath,
   ];
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => [key, canonicalize(child)]),
+  );
+}
+
+export function solToolCatalogSignature(tools: unknown[]): string {
+  const normalized = tools
+    .filter((tool): tool is Record<string, unknown> => Boolean(tool && typeof tool === "object" && !Array.isArray(tool)))
+    .map((tool) => ({
+      pluginId: tool.pluginId,
+      name: tool.name,
+      description: tool.description,
+      requiredScope: tool.requiredScope,
+      inputSchema: canonicalize(tool.inputSchema),
+    }))
+    .sort((a, b) => `${String(a.pluginId)}\0${String(a.name)}`.localeCompare(`${String(b.pluginId)}\0${String(b.name)}`));
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+}
+
+async function atomicWrite(path: string, content: string): Promise<void> {
+  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(temp, content, "utf8");
+  await rename(temp, path);
+}
+
+export async function refreshCodexSessionsForToolCatalog(dataDir: string, signature: string): Promise<boolean> {
+  const root = resolve(dataDir);
+  const markerPath = resolve(root, CATALOG_MARKER);
+  const sessionPath = resolve(root, SESSION_FILE);
+  const previous = await readFile(markerPath, "utf8").then((value) => value.trim()).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return "";
+    throw error;
+  });
+  if (previous === signature) return false;
+
+  await mkdir(root, { recursive: true });
+  // Only Codex thread ids are reset. WhatsApp sessions, Nexo conversation history,
+  // identities, settings and plugin data remain untouched. The next turn receives
+  // recent WhatsApp context again through buildCodexWhatsappPrompt().
+  await atomicWrite(sessionPath, `${JSON.stringify({ version: 1, sessions: {} }, null, 2)}\n`);
+  await atomicWrite(markerPath, `${signature}\n`);
+  return true;
+}
+
+async function refreshSessionsFromProxy(proxyUrl: string): Promise<boolean> {
+  const response = await fetch(`${proxyUrl.replace(/\/$/, "")}/tools`, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error(`SOL tool catalog proxy returned HTTP ${response.status}`);
+  const payload = await response.json() as { tools?: unknown[] };
+  const tools = Array.isArray(payload.tools) ? payload.tools : [];
+  const signature = solToolCatalogSignature(tools);
+  const dataDir = resolve(process.env.SOL_PLUGIN_DATA_DIR?.trim() || process.env.NEXO_WHATSAPP_DATA_DIR?.trim() || ".data");
+  return await refreshCodexSessionsForToolCatalog(dataDir, signature);
 }
 
 export async function configureCodexSolMcp(proxyUrl: string): Promise<{ configured: boolean; message: string }> {
@@ -40,7 +105,16 @@ export async function configureCodexSolMcp(proxyUrl: string): Promise<{ configur
       timeout: 15_000,
       encoding: "utf8",
     });
-    return { configured: true, message: `Registered ${SOL_NEXO_MCP_NAME} for Codex` };
+    const sessionsReset = await refreshSessionsFromProxy(proxyUrl).catch((error) => {
+      console.warn(`[codex-mcp] Could not compare SOL tool catalog: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    });
+    return {
+      configured: true,
+      message: sessionsReset
+        ? `Registered ${SOL_NEXO_MCP_NAME} for Codex; refreshed persisted Codex threads for the current SOL tool catalog`
+        : `Registered ${SOL_NEXO_MCP_NAME} for Codex; SOL tool catalog unchanged`,
+    };
   } catch (error) {
     return { configured: false, message: `Could not register SOL MCP in Codex: ${error instanceof Error ? error.message : String(error)}` };
   }
