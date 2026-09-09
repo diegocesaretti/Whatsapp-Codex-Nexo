@@ -86,7 +86,7 @@ export async function transcribeInboxAudio(
       cliPath,
       audioPath,
       cwd: runtime.cwd,
-      model: runtime.codexModel,
+      model: runtime.codexModel?.trim() || process.env.NEXO_CODEX_MODEL?.trim(),
       language: settings.multimodal.audioLanguage,
       timeoutMs: settings.multimodal.audioTranscriptionTimeoutSeconds * 1000,
     });
