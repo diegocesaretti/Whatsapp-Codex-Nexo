@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   codexSolMcpAddArgs,
+  codexSolMcpExecConfigArgs,
   refreshCodexSessionsForToolCatalog,
   SOL_NEXO_MCP_NAME,
   solToolCatalogSignature,
@@ -21,6 +22,19 @@ test("Codex SOL MCP registration contains no SOL runtime secret", () => {
   assert.equal(args.some((value) => /SOL_PLUGIN_TOKEN|Bearer/i.test(value)), false);
   assert.ok(args.includes("C:\\SOL\\node.exe"));
   assert.ok(args.includes("C:\\SOL\\plugins\\nexo-whatsapp\\dist\\codex-sol-mcp.js"));
+});
+
+test("every Codex exec can receive required SOL MCP overrides directly", () => {
+  const args = codexSolMcpExecConfigArgs(
+    "http://127.0.0.1:45678",
+    "C:\\SOL\\node.exe",
+    "C:\\SOL\\plugins\\nexo-whatsapp\\dist\\codex-sol-mcp.js",
+  );
+  assert.ok(args.includes(`mcp_servers.${SOL_NEXO_MCP_NAME}.required=true`));
+  assert.ok(args.includes(`mcp_servers.${SOL_NEXO_MCP_NAME}.enabled=true`));
+  assert.ok(args.some((value) => value.includes("NEXO_SOL_TOOL_PROXY_URL") && value.includes("45678")));
+  assert.ok(args.some((value) => value.includes("codex-sol-mcp.js")));
+  assert.equal(args.some((value) => /SOL_PLUGIN_TOKEN|Bearer/i.test(value)), false);
 });
 
 test("SOL tool catalog signature is stable across tool and schema key ordering", () => {
