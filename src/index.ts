@@ -1,5 +1,6 @@
 import { AttachmentInbox } from "./attachment-inbox.js";
 import { CodexConversationWorker } from "./codex-conversation-worker.js";
+import { configureCodexSolMcp } from "./codex-sol-mcp-setup.js";
 import { config } from "./config.js";
 import { WhatsappSummarizer } from "./llm.js";
 import { installMultimodalCapture } from "./multimodal-capture.js";
@@ -9,6 +10,7 @@ import { createBridgeServer } from "./server.js";
 import { AppSettingsStore } from "./settings.js";
 import { retryTransientStartup } from "./startup-retry.js";
 import { SolPluginClient } from "./sol-plugin-client.js";
+import { startSolToolProxy } from "./sol-tool-proxy.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 
 const settingsStore = new AppSettingsStore(config.dataDir);
@@ -24,6 +26,10 @@ await attachmentInbox.init();
 await attachmentInbox.cleanup(settings.multimodal.retentionDays).catch(() => undefined);
 
 const solPlugin = new SolPluginClient();
+const solToolProxy = await startSolToolProxy(solPlugin).catch((error) => {
+  solPlugin.log("warn", `Could not start SOL tool proxy: ${error instanceof Error ? error.message : String(error)}`);
+  return undefined;
+});
 let lastSolIdentitySignature = "";
 async function syncNexoPeopleToSol(): Promise<void> {
   if (!solPlugin.enabled) return;
@@ -68,8 +74,19 @@ server.listen(config.port, config.host, () => {
   console.log(`Codex resident worker: ${settings.codexWorker.enabled ? "enabled" : "disabled"}`);
   console.log(`Multimodal inbox: ${settings.multimodal.enabled ? `enabled · max ${settings.multimodal.maxFileMb} MB · retention ${settings.multimodal.retentionDays}d` : "disabled"}`);
   console.log("Multiple INPUT accounts are read-only; OUTPUT conversation replies and media are isolated from the searchable INPUT archive.");
-  solPlugin.reportReady({ bridgeUrl: `http://${config.host}:${config.port}`, storage: store.storageMode, mode: "whatsapp" });
-  void codexWorker.start().catch((error) => console.error("Failed to start Codex worker", error));
+  solPlugin.reportReady({
+    bridgeUrl: `http://${config.host}:${config.port}`,
+    storage: store.storageMode,
+    mode: "whatsapp",
+    ...(solToolProxy ? { solToolProxy: solToolProxy.url } : {}),
+  });
+  void (async () => {
+    if (solToolProxy && solPlugin.enabled) {
+      const registration = await configureCodexSolMcp(solToolProxy.url);
+      solPlugin.log(registration.configured ? "info" : "warn", registration.message);
+    }
+    await codexWorker.start();
+  })().catch((error) => console.error("Failed to start Codex worker", error));
 });
 
 let stopping = false;
@@ -81,6 +98,7 @@ export async function shutdownNexo(signal: string, exitProcess = true): Promise<
   server.close();
   await codexWorker.stop().catch((error) => console.error("Failed to stop Codex worker", error));
   await manager.stopAll().catch((error) => console.error("Failed to stop WhatsApp sessions", error));
+  if (solToolProxy) await solToolProxy.close().catch((error) => console.error("Failed to stop SOL tool proxy", error));
   await Promise.all([
     store.close().catch((error) => console.error("Failed to close storage", error)),
     conversationStore.close().catch((error) => console.error("Failed to close output conversation storage", error)),
