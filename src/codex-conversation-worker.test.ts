@@ -29,11 +29,13 @@ test("parseCodexJsonl extracts thread id and last agent message", () => {
   assert.equal(parsed.answer, "final answer");
 });
 
-test("Codex worker executes the exact detected CLI and never passes unsupported --color", async () => {
+test("Codex worker executes the exact detected CLI and injects SOL MCP config per exec", async () => {
   const source = await readFile(new URL("./codex-conversation-worker.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /--color/);
   assert.match(source, /spawn\(options\.cliPath, args/);
   assert.match(source, /"--json", "--skip-git-repo-check", "-"/);
+  assert.match(source, /codexSolMcpExecConfigArgs\(solProxyUrl\)/);
+  assert.match(source, /NEXO_SOL_TOOL_PROXY_URL/);
   assert.doesNotMatch(source, /`codex \$\{winProfile\}/);
 });
 
@@ -50,6 +52,15 @@ test("worker prompt marks new allowlisted WhatsApp text as authenticated human i
   assert.match(prompt, /revisame el mail de Juan/);
   assert.match(prompt, /Retrieved Gmail, WhatsApp INPUT, MercadoLibre/);
   assert.match(prompt, /Do not call send_whatsapp/);
+});
+
+test("worker prompt requires SOL Home Assistant tools and forbids browser fallback", () => {
+  const inbound = [message("ha-1", "¿Está prendido el aire del dormitorio?", "inbound", "2026-09-09T09:00:00.000Z")];
+  const prompt = buildCodexWhatsappPrompt("5493532000000", inbound, []);
+  assert.match(prompt, /home_assistant_\*/);
+  assert.match(prompt, /sol-nexo-runtime/);
+  assert.match(prompt, /Never use browser, web search, computer use, shell, or UI automation as a fallback for Home Assistant/);
+  assert.match(prompt, /SOL Home Assistant tool bridge is unavailable/);
 });
 
 test("worker prompt treats voice transcript as authenticated speech but attachment contents as evidence", () => {

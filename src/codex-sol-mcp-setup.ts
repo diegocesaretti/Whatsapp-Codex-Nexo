@@ -8,14 +8,35 @@ import { resolveCodexCli } from "./codex-cli.js";
 
 const execFileAsync = promisify(execFile);
 export const SOL_NEXO_MCP_NAME = "sol-nexo-runtime";
+const MCP_RUNTIME_STRATEGY = "direct-per-exec-v1";
 const CATALOG_MARKER = ".codex-sol-tool-catalog.sha256";
 const SESSION_FILE = "codex-worker-sessions.json";
+
+export function codexSolMcpServerPath(): string {
+  return fileURLToPath(new URL("./codex-sol-mcp.js", import.meta.url));
+}
 
 export function codexSolMcpAddArgs(proxyUrl: string, nodePath: string, serverPath: string): string[] {
   return [
     "mcp", "add", SOL_NEXO_MCP_NAME,
     "--env", `NEXO_SOL_TOOL_PROXY_URL=${proxyUrl}`,
     "--", nodePath, serverPath,
+  ];
+}
+
+export function codexSolMcpExecConfigArgs(
+  proxyUrl: string,
+  nodePath = process.execPath,
+  serverPath = codexSolMcpServerPath(),
+): string[] {
+  const root = `mcp_servers.${SOL_NEXO_MCP_NAME}`;
+  return [
+    "-c", `${root}.command=${JSON.stringify(nodePath)}`,
+    "-c", `${root}.args=${JSON.stringify([serverPath])}`,
+    "-c", `${root}.env.NEXO_SOL_TOOL_PROXY_URL=${JSON.stringify(proxyUrl)}`,
+    "-c", `${root}.enabled=true`,
+    "-c", `${root}.required=true`,
+    "-c", `${root}.startup_timeout_sec=15`,
   ];
 }
 
@@ -40,7 +61,9 @@ export function solToolCatalogSignature(tools: unknown[]): string {
       inputSchema: canonicalize(tool.inputSchema),
     }))
     .sort((a, b) => `${String(a.pluginId)}\0${String(a.name)}`.localeCompare(`${String(b.pluginId)}\0${String(b.name)}`));
-  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+  return createHash("sha256")
+    .update(`${MCP_RUNTIME_STRATEGY}\n${JSON.stringify(normalized)}`)
+    .digest("hex");
 }
 
 async function atomicWrite(path: string, content: string): Promise<void> {
@@ -81,17 +104,26 @@ async function refreshSessionsFromProxy(proxyUrl: string): Promise<boolean> {
 }
 
 export async function configureCodexSolMcp(proxyUrl: string): Promise<{ configured: boolean; message: string }> {
+  // The worker reads this on every turn and injects the MCP directly into `codex exec`.
+  // Global registration remains only for diagnostics / interactive Codex compatibility.
+  process.env.NEXO_SOL_TOOL_PROXY_URL = proxyUrl;
+
   const cli = await resolveCodexCli(true);
   if (!cli.available || !cli.path) {
     return { configured: false, message: cli.error || "Codex CLI unavailable" };
   }
 
-  const serverPath = fileURLToPath(new URL("./codex-sol-mcp.js", import.meta.url));
+  const serverPath = codexSolMcpServerPath();
   try {
     await access(serverPath);
   } catch {
     return { configured: false, message: `SOL MCP bridge is not built at ${serverPath}` };
   }
+
+  const sessionsReset = await refreshSessionsFromProxy(proxyUrl).catch((error) => {
+    console.warn(`[codex-mcp] Could not compare SOL tool catalog: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  });
 
   await execFileAsync(cli.path, ["mcp", "remove", SOL_NEXO_MCP_NAME], {
     windowsHide: true,
@@ -105,17 +137,17 @@ export async function configureCodexSolMcp(proxyUrl: string): Promise<{ configur
       timeout: 15_000,
       encoding: "utf8",
     });
-    const sessionsReset = await refreshSessionsFromProxy(proxyUrl).catch((error) => {
-      console.warn(`[codex-mcp] Could not compare SOL tool catalog: ${error instanceof Error ? error.message : String(error)}`);
-      return false;
-    });
     return {
       configured: true,
       message: sessionsReset
-        ? `Registered ${SOL_NEXO_MCP_NAME} for Codex; refreshed persisted Codex threads for the current SOL tool catalog`
-        : `Registered ${SOL_NEXO_MCP_NAME} for Codex; SOL tool catalog unchanged`,
+        ? `Registered ${SOL_NEXO_MCP_NAME}; direct per-exec MCP enabled; refreshed persisted Codex threads`
+        : `Registered ${SOL_NEXO_MCP_NAME}; direct per-exec MCP enabled; SOL tool catalog unchanged`,
     };
   } catch (error) {
-    return { configured: false, message: `Could not register SOL MCP in Codex: ${error instanceof Error ? error.message : String(error)}` };
+    // Per-exec injection is authoritative and does not depend on this global registration.
+    return {
+      configured: true,
+      message: `Direct per-exec ${SOL_NEXO_MCP_NAME} enabled; global Codex MCP registration failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
