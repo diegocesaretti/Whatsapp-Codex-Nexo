@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { config } from "./config.js";
 import { prepareOutboundMedia } from "./outbound-media.js";
 
 test("prepares an allowed image and infers MIME from extension", async () => {
@@ -41,6 +43,21 @@ test("rejects files outside allowed roots", async () => {
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects Nexo private data even when the data directory is inside an allowed root", async () => {
+  const privateDir = join(config.dataDir, `outbound-private-test-${randomUUID()}`);
+  const file = join(privateDir, "credential.txt");
+  try {
+    await mkdir(privateDir, { recursive: true });
+    await writeFile(file, "must-not-leave-nexo");
+    await assert.rejects(
+      prepareOutboundMedia({ kind: "document", filePath: file }, { allowedRoots: [config.dataDir], maxBytes: 1024 }),
+      /media_file_in_private_nexo_data/,
+    );
+  } finally {
+    await rm(privateDir, { recursive: true, force: true });
   }
 });
 

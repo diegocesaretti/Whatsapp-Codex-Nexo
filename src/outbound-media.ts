@@ -1,6 +1,7 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 import { sanitizeAttachmentFileName, type WhatsappAttachmentKind } from "./attachment-inbox.js";
+import { config } from "./config.js";
 
 export type OutboundMediaKind = Extract<WhatsappAttachmentKind, "image" | "audio" | "document">;
 
@@ -63,6 +64,17 @@ function isWithin(candidate: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+async function canonicalRoot(path: string): Promise<string> {
+  try { return await realpath(resolve(path)); } catch { return resolve(path); }
+}
+
+async function assertNexoPrivateDataSafe(actual: string): Promise<void> {
+  const dataRoot = await canonicalRoot(config.dataDir);
+  if (!isWithin(actual, dataRoot)) return;
+  const inboxRoot = await canonicalRoot(resolve(dataRoot, "inbox"));
+  if (!isWithin(actual, inboxRoot)) throw new Error("media_file_in_private_nexo_data");
+}
+
 async function resolveAllowedPath(filePath: string, allowedRoots: string[], baseDir: string): Promise<string> {
   const requested = filePath.trim();
   if (!requested) throw new Error("media_file_path_required");
@@ -73,10 +85,9 @@ async function resolveAllowedPath(filePath: string, allowedRoots: string[], base
   } catch {
     throw new Error("media_file_not_found");
   }
-  const roots = await Promise.all(allowedRoots.map(async (root) => {
-    try { return await realpath(resolve(root)); } catch { return resolve(root); }
-  }));
+  const roots = await Promise.all(allowedRoots.map(canonicalRoot));
   if (!roots.some((root) => isWithin(actual, root))) throw new Error("media_file_outside_allowed_roots");
+  await assertNexoPrivateDataSafe(actual);
   return actual;
 }
 
