@@ -32,7 +32,7 @@ export interface SolToolProxy {
   close(): Promise<void>;
 }
 
-export async function startSolToolProxy(sol: SolPluginClient, port: number): Promise<SolToolProxy> {
+export async function startSolToolProxy(sol: SolPluginClient, port = 0): Promise<SolToolProxy> {
   const server = createServer(async (request, response) => {
     const url = new URL(request.url || "/", "http://127.0.0.1");
     try {
@@ -74,10 +74,15 @@ export async function startSolToolProxy(sol: SolPluginClient, port: number): Pro
       resolve();
     });
   });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw new Error("could_not_resolve_sol_tool_proxy_port");
+  }
 
   return {
     server,
-    url: `http://127.0.0.1:${port}`,
+    url: `http://127.0.0.1:${address.port}`,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
