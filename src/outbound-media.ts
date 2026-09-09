@@ -63,10 +63,10 @@ function isWithin(candidate: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-async function resolveAllowedPath(filePath: string, allowedRoots: string[]): Promise<string> {
+async function resolveAllowedPath(filePath: string, allowedRoots: string[], baseDir: string): Promise<string> {
   const requested = filePath.trim();
   if (!requested) throw new Error("media_file_path_required");
-  const candidate = resolve(requested);
+  const candidate = isAbsolute(requested) ? resolve(requested) : resolve(baseDir, requested);
   let actual: string;
   try {
     actual = await realpath(candidate);
@@ -83,8 +83,10 @@ async function resolveAllowedPath(filePath: string, allowedRoots: string[]): Pro
 export async function prepareOutboundMedia(input: OutboundMediaInput, options: {
   allowedRoots: string[];
   maxBytes: number;
+  baseDir?: string;
 }): Promise<PreparedOutboundMedia> {
-  const absolutePath = await resolveAllowedPath(input.filePath, options.allowedRoots);
+  const baseDir = options.baseDir?.trim() || process.cwd();
+  const absolutePath = await resolveAllowedPath(input.filePath, options.allowedRoots, baseDir);
   const info = await stat(absolutePath);
   if (!info.isFile()) throw new Error("media_source_must_be_file");
   if (info.size <= 0) throw new Error("media_file_empty");
