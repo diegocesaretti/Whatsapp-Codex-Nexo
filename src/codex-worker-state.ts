@@ -1,15 +1,14 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-export interface CodexSessionRecord {
+interface SessionRecord {
   threadId: string;
   updatedAt: string;
-  toolCatalogSignature?: string;
 }
 
 interface StateFile {
   version: 1;
-  sessions: Record<string, CodexSessionRecord>;
+  sessions: Record<string, SessionRecord>;
 }
 
 const emptyState = (): StateFile => ({ version: 1, sessions: {} });
@@ -32,22 +31,14 @@ export class CodexWorkerStateStore {
     }
   }
 
-  async getSession(peerPhone: string): Promise<CodexSessionRecord | undefined> {
-    return (await this.read()).sessions[peerPhone];
-  }
-
   async getThreadId(peerPhone: string): Promise<string | undefined> {
-    return (await this.getSession(peerPhone))?.threadId;
+    return (await this.read()).sessions[peerPhone]?.threadId;
   }
 
-  async setSession(peerPhone: string, threadId: string, toolCatalogSignature?: string): Promise<void> {
+  async setThreadId(peerPhone: string, threadId: string): Promise<void> {
     const task = async () => {
       const state = await this.read();
-      state.sessions[peerPhone] = {
-        threadId,
-        updatedAt: new Date().toISOString(),
-        ...(toolCatalogSignature ? { toolCatalogSignature } : {}),
-      };
+      state.sessions[peerPhone] = { threadId, updatedAt: new Date().toISOString() };
       await mkdir(dirname(this.path), { recursive: true });
       const temp = `${this.path}.${process.pid}.${Date.now()}.tmp`;
       await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
@@ -56,10 +47,6 @@ export class CodexWorkerStateStore {
     const run = this.chain.then(task, task);
     this.chain = run.then(() => undefined, () => undefined);
     await run;
-  }
-
-  async setThreadId(peerPhone: string, threadId: string): Promise<void> {
-    await this.setSession(peerPhone, threadId);
   }
 
   async count(): Promise<number> {
