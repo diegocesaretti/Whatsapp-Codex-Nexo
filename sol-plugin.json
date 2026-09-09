@@ -2,8 +2,8 @@
   "schemaVersion": 2,
   "id": "nexo-whatsapp",
   "name": "Nexo · WhatsApp",
-  "version": "0.9.8",
-  "description": "WhatsApp input/output connector for SOL with multiple accounts, canonical people identities and authoritative low-latency Codex access to authorized SOL plugin tools, injected directly into every Codex execution.",
+  "version": "0.10.0",
+  "description": "WhatsApp input/output connector for SOL with multiple accounts, canonical people identities, secure bidirectional multimedia and authoritative low-latency Codex access to authorized SOL plugin tools.",
   "runtime": "node",
   "entry": "dist/index.js",
   "args": [],
@@ -12,6 +12,7 @@
   "capabilities": [
     "input.whatsapp",
     "output.whatsapp",
+    "output.whatsapp.media",
     "identity.whatsapp",
     "tool.whatsapp",
     "consumer.sol-plugin-tools"
