@@ -11,6 +11,15 @@ interface SolInputRegistration {
   };
 }
 
+export interface SolRuntimeTool {
+  pluginId: string;
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  requiredScope: "read" | "actions";
+  visibility: "private" | "family";
+}
+
 export class SolPluginClient {
   readonly enabled: boolean;
   private readonly baseUrl: string;
@@ -38,6 +47,20 @@ export class SolPluginClient {
     console.log(JSON.stringify({ type: "sol.plugin.log", level, message }));
   }
 
+  async listAvailableTools(): Promise<SolRuntimeTool[]> {
+    if (!this.enabled) return [];
+    const response = await this.request<{ tools?: SolRuntimeTool[] }>("/v1/plugin-api/mcp/tools/available", undefined, "GET");
+    return Array.isArray(response.tools) ? response.tools : [];
+  }
+
+  async invokeTool(tool: SolRuntimeTool, args: Record<string, unknown>): Promise<unknown> {
+    if (!this.enabled) throw new Error("SOL plugin bridge is unavailable");
+    const route = tool.requiredScope === "actions"
+      ? "/v1/plugin-api/mcp/tools/invoke-action"
+      : "/v1/plugin-api/mcp/tools/invoke-read";
+    return await this.request(route, { name: tool.name, arguments: args });
+  }
+
   async ensureInput(account: AccountRecord): Promise<string | undefined> {
     if (!this.enabled || account.role !== "input") return undefined;
     const cached = this.sourceAccounts.get(account.id);
@@ -53,20 +76,13 @@ export class SolPluginClient {
 
   async unregisterInput(account: AccountRecord): Promise<void> {
     if (!this.enabled || account.role !== "input") return;
-    // ensureInput intentionally resolves an existing projection when the
-    // process cache was lost after a restart. The host endpoint is idempotent
-    // from the plugin's point of view and deletes the SOL projection + cascades.
     const sourceAccountId = this.sourceAccounts.get(account.id) ?? await this.ensureInput(account);
     if (!sourceAccountId) return;
     await this.request(`/v1/plugin-api/inputs/${sourceAccountId}`, undefined, "DELETE");
     this.sourceAccounts.delete(account.id);
   }
 
-  async setStatus(
-    account: AccountRecord,
-    status: "connected" | "disconnected" | "error",
-    lastSyncAt?: string,
-  ): Promise<void> {
+  async setStatus(account: AccountRecord, status: "connected" | "disconnected" | "error", lastSyncAt?: string): Promise<void> {
     if (!this.sourceAccounts.has(account.id) && !account.phoneJid?.trim() && status !== "connected") return;
     const sourceAccountId = await this.ensureInput(account);
     if (!sourceAccountId) return;
@@ -83,11 +99,6 @@ export class SolPluginClient {
     await this.request(`/v1/plugin-api/inputs/${sourceAccountId}/status`, { status: "disconnected" });
   }
 
-  /**
-   * Publish Nexo's explicit people model to SOL. These are identity assertions only:
-   * Nexo role/codexConversationEnabled remain Nexo policy and never become SOL member
-   * roles or access grants. Linking to a canonical SOL Person is done by SOL's People UI.
-   */
   async syncNexoIdentities(identities: NexoIdentity[]): Promise<void> {
     if (!this.enabled) return;
     for (const identity of identities) {
@@ -138,7 +149,7 @@ export class SolPluginClient {
   private async request<T = Record<string, unknown>>(
     path: string,
     body?: Record<string, unknown>,
-    method: "POST" | "DELETE" = "POST",
+    method: "GET" | "POST" | "DELETE" = "POST",
   ): Promise<T> {
     if (!this.token) throw new Error("SOL plugin token is unavailable");
     const response = await fetch(`${this.baseUrl}${path}`, {
