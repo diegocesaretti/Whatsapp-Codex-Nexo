@@ -210,6 +210,35 @@ export function createBridgeServer(
         const audit = await manager.sendText({ to: body.to || "", text: body.text || "", reason: body.reason });
         json(response, 200, { sent: true, audit }); return;
       }
+      if (request.method === "POST" && path === "/api/output/media") {
+        const body = await readJson<{
+          to?: string;
+          kind?: "image" | "audio" | "document";
+          filePath?: string;
+          caption?: string;
+          fileName?: string;
+          mimeType?: string;
+          voiceNote?: boolean;
+          reason?: string;
+          confirmedByUser?: boolean;
+        }>(request);
+        if (body.confirmedByUser !== true) { json(response, 403, { error: "confirmedByUser=true is required for outbound WhatsApp" }); return; }
+        if (!body.kind || !["image", "audio", "document"].includes(body.kind)) { json(response, 400, { error: "kind must be image, audio or document" }); return; }
+        if (!body.filePath?.trim()) { json(response, 400, { error: "filePath is required" }); return; }
+        const result = await manager.sendMedia({
+          to: body.to || "",
+          media: {
+            kind: body.kind,
+            filePath: body.filePath,
+            caption: body.caption,
+            fileName: body.fileName,
+            mimeType: body.mimeType,
+            voiceNote: body.voiceNote,
+          },
+          reason: body.reason,
+        });
+        json(response, 200, { sent: true, ...result }); return;
+      }
       if (request.method === "POST" && path === "/api/automation/morning-brief/send") {
         const expected = process.env.NEXO_AUTOMATION_TOKEN?.trim();
         const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, "").trim();

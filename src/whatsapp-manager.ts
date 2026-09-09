@@ -10,7 +10,9 @@ import makeWASocket, {
 import pino from "pino";
 import * as QRCode from "qrcode";
 import { randomUUID } from "node:crypto";
+import { config } from "./config.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
+import { prepareOutboundMedia, type OutboundMediaInput } from "./outbound-media.js";
 import { isAuthorizedPhone, phoneNumberFromJid, safePhoneJid } from "./output-conversation-auth.js";
 import { AppSettingsStore } from "./settings.js";
 import { SolPluginClient } from "./sol-plugin-client.js";
@@ -362,10 +364,79 @@ export class WhatsappManager {
     }
   }
 
+  async sendMedia(input: {
+    to: string;
+    media: OutboundMediaInput;
+    reason?: string;
+  }): Promise<{
+    audit: OutboundAudit;
+    media: { kind: "image" | "audio" | "document"; fileName: string; mimeType: string; sizeBytes: number; voiceNote: boolean };
+  }> {
+    if (!this.settingsStore) throw new Error("Nexo settings are unavailable");
+    const settings = await this.settingsStore.get();
+    if (!settings.multimodal.enabled) throw new Error("multimodal_media_disabled");
+    const output = await this.store.getOutputAccount();
+    if (!output) throw new Error("No WhatsApp output account is configured");
+    await this.start(output.id);
+    const runtime = this.sessions.get(output.id);
+    if (!runtime?.socket || runtime.state !== "open") throw new Error("WhatsApp output account is not connected");
+
+    const workerRoot = settings.codexWorker.workingDirectory.trim() || process.cwd();
+    const media = await prepareOutboundMedia(input.media, {
+      allowedRoots: [config.dataDir, workerRoot],
+      baseDir: workerRoot,
+      maxBytes: settings.multimodal.maxFileMb * 1024 * 1024,
+    });
+    if (media.kind === "audio" && media.caption) throw new Error("audio_caption_not_supported");
+
+    const to = normalizeSendTarget(input.to);
+    let content: Parameters<Socket["sendMessage"]>[1];
+    if (media.kind === "image") {
+      content = { image: media.bytes, mimetype: media.mimeType, ...(media.caption ? { caption: media.caption } : {}) };
+    } else if (media.kind === "audio") {
+      content = { audio: media.bytes, mimetype: media.mimeType, ptt: media.voiceNote };
+    } else {
+      content = { document: media.bytes, mimetype: media.mimeType, fileName: media.fileName, ...(media.caption ? { caption: media.caption } : {}) };
+    }
+
+    await runtime.socket.sendPresenceUpdate("available").catch(() => undefined);
+    try {
+      const result = await runtime.socket.sendMessage(to, content);
+      const label = media.voiceNote ? "voice-note" : media.kind;
+      const summary = `[${label}] ${media.fileName}${media.caption ? ` · ${media.caption}` : ""}`.slice(0, 12_000);
+      const audit: OutboundAudit = {
+        id: randomUUID(),
+        accountId: output.id,
+        to,
+        text: summary,
+        reason: input.reason?.trim().slice(0, 500) || undefined,
+        messageId: result?.key.id ?? undefined,
+        sentAt: new Date().toISOString(),
+      };
+      await this.store.appendOutbound(audit);
+      await this.captureOutboundConversation(output, audit, undefined, media.voiceNote ? "voice_note" : media.kind);
+      runtime.lastMessageAt = new Date();
+      runtime.updatedAt = new Date();
+      return {
+        audit,
+        media: {
+          kind: media.kind,
+          fileName: media.fileName,
+          mimeType: media.mimeType,
+          sizeBytes: media.sizeBytes,
+          voiceNote: media.voiceNote,
+        },
+      };
+    } finally {
+      await runtime.socket.sendPresenceUpdate("unavailable").catch(() => undefined);
+    }
+  }
+
   private async captureOutboundConversation(
     output: AccountRecord,
     audit: OutboundAudit,
     replyToId?: string,
+    messageType = "conversation",
   ): Promise<void> {
     if (!this.settingsStore || !this.conversationStore) return;
     const settings = await this.settingsStore.get();
@@ -382,7 +453,7 @@ export class WhatsappManager {
       peerPhone: peerPhone!,
       direction: "outbound",
       text: audit.text,
-      messageType: "conversation",
+      messageType,
       senderName: output.displayName,
       authorized: true,
       occurredAt: audit.sentAt,
