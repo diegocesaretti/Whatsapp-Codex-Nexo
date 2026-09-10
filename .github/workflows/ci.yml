@@ -18,6 +18,23 @@ jobs:
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm build
+      - name: Verify Codex OAuth dictation runtime
+        run: |
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs';
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const manifest = JSON.parse(fs.readFileSync('sol-plugin.json', 'utf8'));
+          if (pkg.version !== '0.11.1') throw new Error(`package version is ${pkg.version}, expected 0.11.1`);
+          if (manifest.version !== '0.11.1') throw new Error(`manifest version is ${manifest.version}, expected 0.11.1`);
+          const runtime = fs.readFileSync('dist/codex-appserver-audio.js', 'utf8');
+          for (const required of ['backend-api/transcribe', 'getAuthStatus', 'includeToken']) {
+            if (!runtime.includes(required)) throw new Error(`OAuth dictation runtime missing ${required}`);
+          }
+          for (const forbidden of ['localAudio', 'thread/start', 'turn/start']) {
+            if (runtime.includes(forbidden)) throw new Error(`obsolete model-audio path returned: ${forbidden}`);
+          }
+          console.log('Codex OAuth dictation invariants OK');
+          NODE
       - name: Verify compact SOL plugin package can be assembled
         run: |
           rm -rf .solplugin-stage Nexo.solplugin
