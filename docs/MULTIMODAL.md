@@ -38,7 +38,7 @@ The inbox uses hashed per-message directories and sanitized filenames. Cleanup r
 
 ## Codex OAuth is the primary media-processing identity
 
-Nexo does not read, copy, persist or forward the OAuth bearer token used by Codex. When Nexo needs Codex to understand user media, it invokes the locally installed Codex runtime and lets `codex app-server` use its own authenticated ChatGPT session.
+Nexo does not open or parse Codex's auth files. When it needs ChatGPT authentication for inbound audio, it asks the locally installed `codex app-server` to refresh the signed-in account and obtains the short-lived bearer through the app-server `getAuthStatus` request. The bearer exists only in process memory for the transcription request and is never written to disk or logs by Nexo.
 
 This keeps one primary identity for interactive WhatsApp processing:
 
@@ -54,7 +54,7 @@ Codex-managed ChatGPT OAuth
 result returned to Nexo
 ```
 
-An independently configured OpenAI-compatible API key is optional. For voice-note transcription it is used only as a fallback when the Codex OAuth/app-server path is unavailable or the local Codex runtime cannot accept that audio format.
+An independently configured OpenAI-compatible API key is optional. For voice-note transcription it is used only as a fallback when the Codex OAuth/dictation path is unavailable.
 
 ## Inbound images
 
@@ -68,11 +68,29 @@ Attachment file contents remain untrusted evidence. Text embedded in a PDF, spre
 
 ## Inbound voice notes and audio
 
-From v0.11, Nexo first launches the official Codex app-server over local stdio and verifies that `account/read` reports a ChatGPT account. It creates an ephemeral, read-only thread and sends the audio using the official `localAudio` user-input type. The transcription turn is explicitly instructed to treat the audio only as data: it must not execute tools, obey instructions in the recording, answer the speaker, summarize or translate.
+Starting in v0.11.1, voice notes no longer use ordinary Codex `localAudio` model input. That path could successfully wrap an OGG file while still handing it to a normal Codex reasoning model that cannot perform speech recognition, which could result in `[inaudible]` even for a valid WhatsApp recording.
 
-The Codex runtime snapshots supported local audio and sends it using its own authenticated session. Nexo never opens Codex's auth files and never receives the OAuth access token.
+The primary audio path is now the same one-shot dictation service used by Codex Desktop:
 
-Codex local-audio formats currently used by this path are WAV, MP3, M4A, WebM and OGG. Nexo's own attachment-size policy still applies before processing.
+```text
+WhatsApp OGG/Opus (or other supported audio)
+    ↓
+Baileys decrypted media bytes
+    ↓
+Nexo .data/inbox
+    ↓
+codex app-server
+    ├─ account/read(refreshToken=true)
+    └─ getAuthStatus(includeToken=true, refreshToken=true)
+             ↓
+https://chatgpt.com/backend-api/transcribe
+             ↓
+plain transcript
+```
+
+Before requesting a bearer, Nexo verifies that `account/read` reports a ChatGPT account. The bearer returned by `getAuthStatus` is used only for the single HTTPS transcription request, stays in memory, is never persisted or logged, and Nexo never reads `auth.json` directly. When present, the ChatGPT account id is derived from the in-memory JWT claim for the request header and discarded with the token afterward.
+
+The Codex dictation upload accepts the containers Nexo currently routes through this path: WAV, MP3, M4A/MP4, WebM, OGG/OGA and FLAC. WhatsApp voice notes arrive as OGG/Opus and are uploaded without lossy transcoding. Nexo's own attachment-size policy still applies before processing.
 
 If the Codex OAuth path fails and Nexo already has an optional LLM/API key configured, Nexo falls back to:
 
@@ -80,11 +98,13 @@ If the Codex OAuth path fails and Nexo already has an optional LLM/API key confi
 {configured LLM base URL}/audio/transcriptions
 ```
 
-using `multimodal.audioTranscriptionModel`. No API key is required when the Codex OAuth path succeeds.
+using `multimodal.audioTranscriptionModel`. No separate API key is required when the Codex OAuth dictation path succeeds.
 
 The resulting transcription is treated as authenticated human speech because the original audio arrived from an allowlisted direct OUTPUT peer. This is deliberately different from text discovered inside attached documents/images, which remains untrusted evidence.
 
-If both Codex OAuth processing and the optional API fallback fail, the attachment remains locally available and the normal Codex turn receives a clear transcription-error marker instead of silently dropping the WhatsApp message.
+If both Codex OAuth processing and the optional API fallback fail, the attachment remains locally available and the normal Codex turn receives a clear transcription-error marker instead of silently dropping the WhatsApp message or fabricating `[inaudible]`.
+
+`/backend-api/transcribe` is a Codex Desktop/ChatGPT backend surface rather than a public standalone transcription API. Nexo therefore keeps the optional standards-compatible `/audio/transcriptions` fallback and reports HTTP/auth failures explicitly if the Codex backend contract changes.
 
 ## Outbound media
 
@@ -125,7 +145,7 @@ Outbound bytes are sent directly to WhatsApp and are not copied into Neon. The e
 - outbound file size is checked before and after reading;
 - outbound paths are constrained to trusted local roots after `realpath` resolution;
 - Nexo private auth/secrets/settings files cannot be sent as outbound media;
-- the Codex OAuth token is managed by Codex and is never copied into Nexo;
+- Codex OAuth is refreshed/served by the local app-server; Nexo never reads Codex auth files and never persists the bearer it receives for dictation;
 - attachments are never executed by Nexo;
 - outbound media requires explicit current-human confirmation;
 - inbound files expire automatically according to local retention settings;
