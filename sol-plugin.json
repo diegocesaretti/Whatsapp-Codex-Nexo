@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "nexo-whatsapp",
   "name": "Nexo · WhatsApp",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "WhatsApp input/output connector for SOL with secure bidirectional multimedia, Codex OAuth media processing, canonical people identities and authoritative low-latency Codex access to authorized SOL plugin tools.",
   "runtime": "node",
   "entry": "dist/index.js",
@@ -53,7 +53,7 @@
       "key": "codexModel",
       "label": "Modelo de Codex",
       "type": "text",
-      "description": "Modelo usado por el worker residente de WhatsApp. El procesamiento de audio usa la sesión ChatGPT/OAuth administrada por el app-server de Codex; Nexo no copia tokens OAuth.",
+      "description": "Modelo usado por el worker residente de WhatsApp. Las notas de voz se transcriben por el servicio de dictado de Codex usando la sesión ChatGPT/OAuth administrada por el app-server; Nexo no abre auth.json ni persiste el token.",
       "env": "NEXO_CODEX_MODEL",
       "required": false,
       "default": "gpt-5.6-sol"
