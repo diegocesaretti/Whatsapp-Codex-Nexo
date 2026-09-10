@@ -82,26 +82,29 @@ export async function transcribeInboxAudio(
   try {
     const cliPath = runtime.cliPath?.trim() || (await resolveCodexCli(false)).path;
     if (!cliPath) throw new Error("Codex CLI is unavailable");
+
+    // The OAuth path intentionally does not use runtime.codexModel: ordinary Codex
+    // reasoning models are not the speech recognizer. The local app-server refreshes
+    // ChatGPT auth and Nexo performs the same one-shot dictation request used by Codex.
     return await transcribeLocalAudioWithCodexOAuth({
       cliPath,
       audioPath,
       cwd: runtime.cwd,
-      model: runtime.codexModel?.trim() || process.env.NEXO_CODEX_MODEL?.trim(),
       language: settings.multimodal.audioLanguage,
       timeoutMs: settings.multimodal.audioTranscriptionTimeoutSeconds * 1000,
     });
   } catch (error) {
     codexFailure = error;
-    console.warn(`[audio-transcriber] Codex OAuth path unavailable; checking configured API fallback: ${errorText(error)}`);
+    console.warn(`[audio-transcriber] Codex OAuth dictation unavailable; checking configured API fallback: ${errorText(error)}`);
   }
 
   if (await settingsStore.getLlmApiKey()) {
     try {
       return await transcribeWithConfiguredApi(attachment, inbox, settingsStore);
     } catch (fallbackError) {
-      throw new Error(`Codex OAuth transcription failed (${errorText(codexFailure)}); API fallback also failed (${errorText(fallbackError)})`);
+      throw new Error(`Codex OAuth dictation failed (${errorText(codexFailure)}); API fallback also failed (${errorText(fallbackError)})`);
     }
   }
 
-  throw new Error(`Codex OAuth transcription failed (${errorText(codexFailure)}). No API-key fallback is configured.`);
+  throw new Error(`Codex OAuth dictation failed (${errorText(codexFailure)}). No API-key fallback is configured.`);
 }
