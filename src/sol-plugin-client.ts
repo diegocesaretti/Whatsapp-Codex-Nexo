@@ -61,6 +61,15 @@ export class SolPluginClient {
     return await this.request(route, { name: tool.name, arguments: args });
   }
 
+  async searchWhatsappHistory(query: string, limit?: number): Promise<Array<Record<string, unknown>>> {
+    if (!this.enabled) throw new Error("SOL plugin bridge is unavailable");
+    const response = await this.request<{ results?: Array<Record<string, unknown>> }>(
+      "/v1/plugin-api/mcp/core/search-whatsapp",
+      { query, ...(limit !== undefined ? { limit } : {}) },
+    );
+    return Array.isArray(response.results) ? response.results : [];
+  }
+
   async ensureInput(account: AccountRecord): Promise<string | undefined> {
     if (!this.enabled || account.role !== "input") return undefined;
     const cached = this.sourceAccounts.get(account.id);
