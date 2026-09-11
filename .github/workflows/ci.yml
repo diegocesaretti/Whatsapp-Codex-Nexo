@@ -24,8 +24,8 @@ jobs:
           import fs from 'node:fs';
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
           const manifest = JSON.parse(fs.readFileSync('sol-plugin.json', 'utf8'));
-          if (pkg.version !== '0.11.1') throw new Error(`package version is ${pkg.version}, expected 0.11.1`);
-          if (manifest.version !== '0.11.1') throw new Error(`manifest version is ${manifest.version}, expected 0.11.1`);
+          if (pkg.version !== manifest.version) throw new Error(`package/manifest version mismatch: ${pkg.version} != ${manifest.version}`);
+          if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(pkg.version)) throw new Error(`invalid package version: ${pkg.version}`);
           const runtime = fs.readFileSync('dist/codex-appserver-audio.js', 'utf8');
           for (const required of ['backend-api/transcribe', 'getAuthStatus', 'includeToken']) {
             if (!runtime.includes(required)) throw new Error(`OAuth dictation runtime missing ${required}`);
@@ -33,7 +33,7 @@ jobs:
           for (const forbidden of ['localAudio', 'thread/start', 'turn/start']) {
             if (runtime.includes(forbidden)) throw new Error(`obsolete model-audio path returned: ${forbidden}`);
           }
-          console.log('Codex OAuth dictation invariants OK');
+          console.log(`Nexo ${pkg.version} · Codex OAuth dictation invariants OK`);
           NODE
       - name: Verify compact SOL plugin package can be assembled
         run: |
