@@ -2,6 +2,7 @@ import { ensureAdvancedSettingsPanel } from "./ui-v5-advanced.js";
 import { augmentAdminPageV5 } from "./ui-v5-extras.js";
 import { renderAdminPageV5 } from "./ui-v5.js";
 
+// CI validation marker for the Nexo 0.7.3 Windows package.
 export function renderAdminPage(): string {
   // ui-v5 is emitted from a TypeScript template literal. Preserve the two
   // JavaScript regex escapes that would otherwise be consumed by that outer
