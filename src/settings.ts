@@ -503,6 +503,9 @@ export async function getWindowsAutostart(): Promise<boolean> {
 
 export async function setWindowsAutostart(enabled: boolean): Promise<boolean> {
   if (process.platform !== "win32") throw new Error("Windows autostart is only available on Windows");
+  if (enabled && process.env.SOL_PLUGIN_API_URL?.trim()) {
+    throw new Error("nexo_autostart_managed_by_sol");
+  }
   if (enabled) {
     const script = resolve(process.cwd(), "scripts", "windows", "nexo-tray.ps1");
     const command = `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"${script}\" -NoOpen`;

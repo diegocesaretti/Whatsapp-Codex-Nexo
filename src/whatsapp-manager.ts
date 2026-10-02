@@ -53,6 +53,7 @@ interface RuntimeSession {
   lastError?: string;
   updatedAt: Date;
   manualStop: boolean;
+  reconnectBlocked: boolean;
   generation: number;
   reconnectTimer?: NodeJS.Timeout;
   queue: Promise<void>;
@@ -176,6 +177,50 @@ export class WhatsappManager {
     );
   }
 
+  async reconcileLinkedAccounts(): Promise<{ checked: number; restarted: number; blocked: number }> {
+    const accounts = (await this.store.listAccounts()).filter((account) => account.enabled && account.linkedAt);
+    let restarted = 0;
+    let blocked = 0;
+
+    for (const account of accounts) {
+      const runtime = this.sessions.get(account.id);
+      if (!runtime) {
+        try {
+          await this.start(account.id);
+          restarted += 1;
+        } catch (error) {
+          console.error(`[whatsapp:${account.id}] watchdog start failed`, error);
+        }
+        continue;
+      }
+
+      if (runtime.manualStop || runtime.reconnectBlocked || runtime.state === "logged_out") {
+        blocked += 1;
+        continue;
+      }
+      if (runtime.reconnectTimer) continue;
+      if (runtime.socket && ["connecting", "qr", "open"].includes(runtime.state)) continue;
+
+      const recoverableStall =
+        runtime.state === "idle"
+        || runtime.state === "error"
+        || (runtime.state === "reconnecting" && !runtime.socket && !runtime.reconnectTimer);
+      if (!recoverableStall) continue;
+
+      try {
+        await this.start(account.id);
+        restarted += 1;
+      } catch (error) {
+        runtime.state = "error";
+        runtime.lastError = error instanceof Error ? error.message : String(error);
+        runtime.updatedAt = new Date();
+        console.error(`[whatsapp:${account.id}] watchdog reconnect failed`, error);
+      }
+    }
+
+    return { checked: accounts.length, restarted, blocked };
+  }
+
   async start(accountId: string): Promise<RuntimeStatus> {
     const account = await this.store.getAccount(accountId);
     if (!account) throw new Error("WhatsApp account not found");
@@ -189,6 +234,7 @@ export class WhatsappManager {
         reconnectAttempt: 0,
         updatedAt: new Date(),
         manualStop: false,
+        reconnectBlocked: false,
         generation: 0,
         queue: Promise.resolve(),
         receivedMessages: 0,
@@ -198,6 +244,7 @@ export class WhatsappManager {
       this.sessions.set(accountId, runtime);
     }
     runtime.manualStop = false;
+    runtime.reconnectBlocked = false;
     if (runtime.socket && ["connecting", "qr", "open", "reconnecting"].includes(runtime.state)) {
       return publicStatus(runtime);
     }
@@ -516,6 +563,7 @@ export class WhatsappManager {
         runtime.state = "open";
         runtime.qrDataUrl = undefined;
         runtime.reconnectAttempt = 0;
+        runtime.reconnectBlocked = false;
         runtime.lastError = undefined;
         runtime.phoneJid = socket.user?.id;
         runtime.displayName = socket.user?.name ?? undefined;
@@ -700,12 +748,14 @@ export class WhatsappManager {
     runtime.updatedAt = new Date();
 
     if (statusCode !== undefined && NON_RECONNECTABLE.has(statusCode)) {
+      runtime.reconnectBlocked = true;
       runtime.state = statusCode === DisconnectReason.loggedOut ? "logged_out" : "error";
       runtime.lastError = pairingError(statusCode, message);
       await this.store.updateAccount(account.id, { lastError: runtime.lastError }).catch(() => undefined);
       return;
     }
 
+    runtime.reconnectBlocked = false;
     runtime.reconnectAttempt += 1;
     runtime.state = "reconnecting";
     runtime.lastError = pairingError(statusCode, message);

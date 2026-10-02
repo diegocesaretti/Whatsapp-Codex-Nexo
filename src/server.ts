@@ -76,6 +76,7 @@ export function createBridgeServer(
           ...publicSettings,
           codexWorkerStatus: codexWorker.status(),
           windowsAutostart: await getWindowsAutostart(),
+          startupManagedBySol: Boolean(process.env.SOL_PLUGIN_API_URL?.trim()),
           platform: process.platform,
           storage: {
             mode: store.storageMode,
@@ -102,7 +103,7 @@ export function createBridgeServer(
         });
         if (typeof body.llmApiKey === "string") await settingsStore.setLlmApiKey(body.llmApiKey);
         const windowsAutostart = body.windowsAutostart === undefined ? await getWindowsAutostart() : await setWindowsAutostart(Boolean(body.windowsAutostart));
-        json(response, 200, { settings, codexWorkerStatus: codexWorker.status(), llmApiKeyConfigured: Boolean(await settingsStore.getLlmApiKey()), windowsAutostart, restartRecommended: false }); return;
+        json(response, 200, { settings, codexWorkerStatus: codexWorker.status(), llmApiKeyConfigured: Boolean(await settingsStore.getLlmApiKey()), windowsAutostart, startupManagedBySol: Boolean(process.env.SOL_PLUGIN_API_URL?.trim()), restartRecommended: false }); return;
       }
       if (request.method === "GET" && path === "/api/codex-worker/status") {
         if (url.searchParams.get("refresh") === "1") await codexWorker.refreshCodexCli(true);
