@@ -7,7 +7,7 @@ import { installMultimodalCapture } from "./multimodal-capture.js";
 import { NexoBridgeStore } from "./nexo-store.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { createBridgeServer } from "./server.js";
-import { AppSettingsStore } from "./settings.js";
+import { AppSettingsStore, setWindowsAutostart } from "./settings.js";
 import { retryTransientStartup } from "./startup-retry.js";
 import { SolPluginClient } from "./sol-plugin-client.js";
 import { startSolToolProxy } from "./sol-tool-proxy.js";
@@ -26,6 +26,11 @@ await attachmentInbox.init();
 await attachmentInbox.cleanup(settings.multimodal.retentionDays).catch(() => undefined);
 
 const solPlugin = new SolPluginClient();
+if (solPlugin.enabled && process.platform === "win32") {
+  await setWindowsAutostart(false).catch((error) => {
+    solPlugin.log("warn", `Could not remove legacy standalone Nexo autostart: ${error instanceof Error ? error.message : String(error)}`);
+  });
+}
 const solToolProxy = await startSolToolProxy(solPlugin).catch((error) => {
   solPlugin.log("warn", `Could not start SOL tool proxy: ${error instanceof Error ? error.message : String(error)}`);
   return undefined;
@@ -63,6 +68,23 @@ const manager = new WhatsappManager(store, settingsStore, conversationStore, sol
 installMultimodalCapture(manager, settingsStore, attachmentInbox);
 if (settings.autoConnectLinkedAccounts) await manager.startLinkedAccounts();
 
+let whatsappWatchdogBusy = false;
+const whatsappWatchdogTimer = setInterval(() => {
+  if (whatsappWatchdogBusy) return;
+  whatsappWatchdogBusy = true;
+  void (async () => {
+    const current = await settingsStore.get();
+    if (!current.autoConnectLinkedAccounts) return;
+    const result = await manager.reconcileLinkedAccounts();
+    if (result.restarted > 0) {
+      console.log(`[whatsapp] watchdog restarted ${result.restarted}/${result.checked} linked account(s)`);
+    }
+  })()
+    .catch((error) => console.error("[whatsapp] watchdog failed", error))
+    .finally(() => { whatsappWatchdogBusy = false; });
+}, 30_000);
+whatsappWatchdogTimer.unref?.();
+
 const summarizer = new WhatsappSummarizer(store, settingsStore);
 const codexWorker = new CodexConversationWorker(config.dataDir, settingsStore, conversationStore, manager, attachmentInbox);
 const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore, codexWorker);
@@ -95,6 +117,7 @@ export async function shutdownNexo(signal: string, exitProcess = true): Promise<
   stopping = true;
   console.log(`\n${signal}: stopping Nexo...`);
   clearInterval(identitySyncTimer);
+  clearInterval(whatsappWatchdogTimer);
   server.close();
   await codexWorker.stop().catch((error) => console.error("Failed to stop Codex worker", error));
   await manager.stopAll().catch((error) => console.error("Failed to stop WhatsApp sessions", error));
