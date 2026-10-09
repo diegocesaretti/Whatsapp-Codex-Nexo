@@ -51,7 +51,7 @@ export function installInputAudioTranscription(
   let recovering = false;
 
   const pump = (): void => {
-    while (!stopped && active < 2 && jobs.length) {
+    while (!stopped && active < 1 && jobs.length) {
       const job = jobs.shift()!;
       active++;
       void job.run().catch((error: unknown) => {
