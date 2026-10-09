@@ -122,7 +122,7 @@ const defaults: AppSettings = {
     retentionDays: 7,
     attachImagesToCodex: true,
     audioTranscriptionEnabled: true,
-    audioTranscriptionModel: "voxtral-mini-latest",
+    audioTranscriptionModel: "mistralai/voxtral-mini-transcribe",
     audioLanguage: "",
     audioTranscriptionTimeoutSeconds: 120,
   },
