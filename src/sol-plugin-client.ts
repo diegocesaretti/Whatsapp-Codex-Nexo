@@ -151,6 +151,10 @@ export class SolPluginClient {
         addressingMode: message.addressingMode,
         fromMe: message.fromMe,
         messageType: message.messageType,
+        ...(message.messageType === "audioTranscription" ? {
+          transcriptOf: `${message.chatJid}:${message.sourceMessageId.replace(/:transcription$/, "")}`,
+          derivedFromAudio: true,
+        } : {}),
       },
     });
   }

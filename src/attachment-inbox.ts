@@ -26,6 +26,9 @@ export interface InboxAttachment {
   transcriptionModel?: string;
   transcriptionAt?: string;
   transcriptionError?: string;
+  transcriptionAttempts?: number;
+  transcriptionRetryAt?: string;
+  solIndexedAt?: string;
 }
 
 interface InboxIndex {
@@ -182,6 +185,10 @@ export class AttachmentInbox {
     return record;
   }
 
+  async listAll(): Promise<InboxAttachment[]> {
+    return (await this.readIndex()).attachments;
+  }
+
   async listForMessages(messageIds: string[]): Promise<InboxAttachment[]> {
     const wanted = new Set(messageIds);
     if (!wanted.size) return [];
@@ -202,6 +209,7 @@ export class AttachmentInbox {
       item.transcriptionModel = model;
       item.transcriptionAt = new Date().toISOString();
       item.transcriptionError = undefined;
+      item.transcriptionRetryAt = undefined;
       await atomicJson(this.indexPath, index);
     });
   }
@@ -212,6 +220,18 @@ export class AttachmentInbox {
       const item = index.attachments.find((entry) => entry.id === id);
       if (!item) return;
       item.transcriptionError = error.slice(0, 1200);
+      item.transcriptionAttempts = (item.transcriptionAttempts ?? 0) + 1;
+      item.transcriptionRetryAt = new Date(Date.now() + Math.min(3_600_000, 60_000 * (2 ** Math.min(item.transcriptionAttempts - 1, 6)))).toISOString();
+      await atomicJson(this.indexPath, index);
+    });
+  }
+
+  async setSolIndexed(id: string): Promise<void> {
+    await this.mutate(async () => {
+      const index = await this.readIndex();
+      const item = index.attachments.find((entry) => entry.id === id);
+      if (!item) return;
+      item.solIndexedAt = new Date().toISOString();
       await atomicJson(this.indexPath, index);
     });
   }

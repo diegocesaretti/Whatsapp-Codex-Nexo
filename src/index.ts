@@ -4,6 +4,7 @@ import { configureCodexSolMcp } from "./codex-sol-mcp-setup.js";
 import { config } from "./config.js";
 import { WhatsappSummarizer } from "./llm.js";
 import { installMultimodalCapture } from "./multimodal-capture.js";
+import { installInputAudioTranscription } from "./input-audio-capture.js";
 import { NexoBridgeStore } from "./nexo-store.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { createBridgeServer } from "./server.js";
@@ -66,7 +67,9 @@ identitySyncTimer.unref?.();
 
 const manager = new WhatsappManager(store, settingsStore, conversationStore, solPlugin);
 installMultimodalCapture(manager, settingsStore, attachmentInbox);
+const inputAudio = installInputAudioTranscription(manager, settingsStore, attachmentInbox, store, solPlugin);
 if (settings.autoConnectLinkedAccounts) await manager.startLinkedAccounts();
+void inputAudio.recover();
 
 let whatsappWatchdogBusy = false;
 const whatsappWatchdogTimer = setInterval(() => {
@@ -87,7 +90,7 @@ whatsappWatchdogTimer.unref?.();
 
 const summarizer = new WhatsappSummarizer(store, settingsStore);
 const codexWorker = new CodexConversationWorker(config.dataDir, settingsStore, conversationStore, manager, attachmentInbox);
-const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore, codexWorker);
+const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore, codexWorker, attachmentInbox);
 server.listen(config.port, config.host, () => {
   console.log(`WhatsApp Codex Nexo listening on http://${config.host}:${config.port}`);
   console.log(`Storage: ${store.storageMode}${store.storageMode === "neon" ? ` (schema whatsapp_nexo · source ${config.databaseSource})` : " (.data local)"}`);
@@ -118,6 +121,7 @@ export async function shutdownNexo(signal: string, exitProcess = true): Promise<
   console.log(`\n${signal}: stopping Nexo...`);
   clearInterval(identitySyncTimer);
   clearInterval(whatsappWatchdogTimer);
+  inputAudio.stop();
   server.close();
   await codexWorker.stop().catch((error) => console.error("Failed to stop Codex worker", error));
   await manager.stopAll().catch((error) => console.error("Failed to stop WhatsApp sessions", error));

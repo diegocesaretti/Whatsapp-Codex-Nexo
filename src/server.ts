@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 import { CodexConversationWorker } from "./codex-conversation-worker.js";
+import { AttachmentInbox } from "./attachment-inbox.js";
+import { getInputAudioStatus } from "./input-audio-status.js";
 import { config } from "./config.js";
 import { WhatsappSummarizer } from "./llm.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
@@ -48,6 +50,7 @@ export function createBridgeServer(
   summarizer: WhatsappSummarizer,
   conversationStore: OutputConversationStore,
   codexWorker: CodexConversationWorker,
+  attachmentInbox?: AttachmentInbox,
 ) {
   return createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${request.headers.host || `${config.host}:${config.port}`}`);
@@ -117,12 +120,17 @@ export function createBridgeServer(
         const body = await readJson<{ query?: string; accountIds?: string[]; after?: string; before?: string; limit?: number; focus?: string }>(request);
         json(response, 200, await summarizer.summarize(body)); return;
       }
+      if (request.method === "GET" && path === "/api/input-audio/status") {
+        json(response, 200, attachmentInbox ? await getInputAudioStatus(attachmentInbox, store) : { enabled: false });
+        return;
+      }
       if (request.method === "GET" && path === "/api/state") {
         const [accounts, settings] = await Promise.all([store.listAccounts(), settingsStore.get()]);
         json(response, 200, {
           accounts: accounts.map((account) => ({ ...account, runtime: manager.getStatus(account.id) })),
           settings,
           codexWorker: codexWorker.status(),
+          inputAudio: attachmentInbox ? await getInputAudioStatus(attachmentInbox, store) : undefined,
           storage: store.storageMode,
           policy: {
             multipleInputs: true,
