@@ -52,7 +52,15 @@ try:
             raise RuntimeError("local_whisper_empty_transcription")
         return result
 
-    if requested_device in ("auto", "cuda"):
+    # Avoid spending several seconds attempting CUDA when the runtime DLLs are
+    # missing; on Windows the model loads lazily but inference then fails.
+    _cuda_ready = sys.platform != "win32" or (
+        any(os.path.isfile(os.path.join(root, "nvidia", "cublas", "bin", "cublas64_12.dll"))
+            for root in _cuda_roots)
+        and any(os.path.isfile(os.path.join(root, "nvidia", "cudnn", "bin", "cudnn64_9.dll"))
+                for root in _cuda_roots)
+    )
+    if requested_device in ("auto", "cuda") and _cuda_ready:
         try:
             transcript = recognize("cuda", "int8_float16")
             device = "cuda"
