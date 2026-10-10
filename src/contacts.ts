@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { normalizeImportedPhone, type ParsedContact } from "./contact-import.js";
 
 export interface WhatsappContactObservation {
   id?: string | null;
@@ -19,7 +20,10 @@ export interface WhatsappContact {
   verifiedName?: string;
   firstObservedAt: string;
   lastObservedAt: string;
-  source: "history" | "realtime";
+  source: "history" | "realtime" | "import";
+  sources?: Array<"history" | "realtime" | "import">;
+  importedName?: string;
+  importedAt?: string;
 }
 
 interface ContactsFile {
@@ -28,6 +32,32 @@ interface ContactsFile {
 }
 
 const blank = (): ContactsFile => ({ version: 1, accounts: {} });
+
+function keyForContact(contact: WhatsappContact): string {
+  return contact.phone ? "tel:" + contact.phone : "jid:" + contact.jid;
+}
+
+function uniqueSources(...groups: Array<Array<WhatsappContact["source"]> | undefined>): Array<WhatsappContact["source"]> {
+  return [...new Set(groups.flatMap(group => group ?? []))];
+}
+
+function mergeContact(previous: WhatsappContact | undefined, next: WhatsappContact): WhatsappContact {
+  const merged: WhatsappContact = {
+    ...previous, ...next,
+    // Never regress a saved WhatsApp name when a notify-only update arrives.
+    savedName: next.savedName ?? previous?.savedName,
+    importedName: next.importedName ?? previous?.importedName,
+    pushName: next.pushName ?? previous?.pushName,
+    verifiedName: next.verifiedName ?? previous?.verifiedName,
+    phone: next.phone ?? previous?.phone,
+    jid: next.jid.startsWith("tel:") && previous?.jid ? previous.jid : next.jid,
+    firstObservedAt: previous?.firstObservedAt ?? next.firstObservedAt,
+    sources: uniqueSources(previous?.sources ?? (previous ? [previous.source] : []), next.sources ?? [next.source]),
+    importedAt: next.importedAt ?? previous?.importedAt,
+  };
+  merged.displayName = merged.savedName ?? merged.importedName ?? merged.verifiedName ?? merged.pushName ?? previous?.displayName;
+  return merged;
+}
 
 function cleanName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -71,7 +101,20 @@ export class WhatsappContactsStore {
   private async load(): Promise<ContactsFile> {
     try {
       const parsed = JSON.parse(await readFile(this.path, "utf8")) as ContactsFile;
-      return parsed?.version === 1 && parsed.accounts && typeof parsed.accounts === "object" ? parsed : blank();
+      if (parsed?.version !== 1 || !parsed.accounts || typeof parsed.accounts !== "object") return blank();
+      // Backward compatible with 0.11.7's JID-keyed contacts. Group only within
+      // the same INPUT account and only when normalized phone numbers match.
+      const normalized = blank();
+      for (const [accountId, bucket] of Object.entries(parsed.accounts)) {
+        const target: Record<string, WhatsappContact> = {};
+        for (const entry of Object.values(bucket)) {
+          if (!entry || typeof entry !== "object" || !entry.jid) continue;
+          const key = keyForContact(entry);
+          target[key] = mergeContact(target[key], entry);
+        }
+        normalized.accounts[accountId] = target;
+      }
+      return normalized;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return blank();
       throw error;
@@ -107,23 +150,20 @@ export class WhatsappContactsStore {
       let added = 0;
       let updated = 0;
       for (const contact of incoming.values()) {
-        const existing = bucket[contact.jid];
-        const merged: WhatsappContact = {
-          ...existing,
-          accountId,
-          jid: contact.jid,
+        const key = contact.phone ? "tel:" + contact.phone : "jid:" + contact.jid;
+        const existing = bucket[key];
+        const merged = mergeContact(existing, {
+          accountId, jid: contact.jid,
           ...(contact.phone ? { phone: contact.phone } : {}),
           ...(contact.savedName ? { savedName: contact.savedName } : {}),
           ...(contact.pushName ? { pushName: contact.pushName } : {}),
           ...(contact.verifiedName ? { verifiedName: contact.verifiedName } : {}),
-          displayName: contact.savedName ?? existing?.savedName ?? contact.verifiedName ?? existing?.verifiedName ?? contact.pushName ?? existing?.pushName,
           firstObservedAt: existing?.firstObservedAt ?? now,
-          lastObservedAt: now,
-          source,
-        };
+          lastObservedAt: now, source,
+        });
         if (!existing) added++;
         else if (existing.displayName !== merged.displayName || existing.phone !== merged.phone || existing.savedName !== merged.savedName || existing.pushName !== merged.pushName || existing.verifiedName !== merged.verifiedName) updated++;
-        bucket[contact.jid] = merged;
+        bucket[key] = merged;
       }
       file.accounts[accountId] = bucket;
       await this.save(file);
@@ -131,7 +171,45 @@ export class WhatsappContactsStore {
     });
   }
 
-  async list(input: { accountIds?: string[]; query?: string; limit?: number } = {}): Promise<{ contacts: WhatsappContact[]; total: number }> {
+  async importContacts(accountId: string, entries: ParsedContact[], countryCode = "54"): Promise<{
+    added: number; updated: number; duplicates: number; invalid: number;
+  }> {
+    const incoming = new Map<string, string>();
+    let duplicates = 0;
+    let invalid = 0;
+    for (const entry of entries) {
+      const phone = normalizeImportedPhone(entry.phone, countryCode);
+      const name = cleanName(entry.name);
+      if (!phone || !name) { invalid++; continue; }
+      if (incoming.has(phone)) duplicates++;
+      incoming.set(phone, name);
+    }
+    if (!incoming.size) return { added: 0, updated: 0, duplicates, invalid };
+    return this.serialize(async () => {
+      const file = await this.load();
+      const bucket = file.accounts[accountId] ?? {};
+      let added = 0, updated = 0;
+      const now = new Date().toISOString();
+      for (const [phone, name] of incoming) {
+        const key = "tel:" + phone;
+        const previous = bucket[key];
+        if (previous) duplicates++;
+        const merged = mergeContact(previous, {
+          accountId, jid: previous?.jid ?? key, phone,
+          importedName: name, importedAt: now,
+          source: "import", firstObservedAt: previous?.firstObservedAt ?? now, lastObservedAt: now,
+        });
+        if (!previous) added++;
+        else if (merged.importedName !== previous.importedName || merged.displayName !== previous.displayName) updated++;
+        bucket[key] = merged;
+      }
+      file.accounts[accountId] = bucket;
+      await this.save(file);
+      return { added, updated, duplicates, invalid };
+    });
+  }
+
+  async list(input: { accountIds?: string[]; query?: string; limit?: number; offset?: number } = {}): Promise<{ contacts: WhatsappContact[]; total: number }> {
     await this.mutation;
     const file = await this.load();
     const selected = input.accountIds ? new Set(input.accountIds) : undefined;
@@ -143,7 +221,8 @@ export class WhatsappContactsStore {
         .some(value => value?.toLocaleLowerCase("es-AR").includes(needle)))
       .sort((a, b) => (a.displayName || a.phone || a.jid).localeCompare(b.displayName || b.phone || b.jid, "es-AR"));
     const limit = Math.max(1, Math.min(500, Number.isFinite(input.limit) ? Math.trunc(input.limit!) : 100));
-    return { contacts: contacts.slice(0, limit), total: contacts.length };
+    const offset = Math.max(0, Math.min(1_000_000, Math.trunc(input.offset ?? 0)));
+    return { contacts: contacts.slice(offset, offset + limit), total: contacts.length };
   }
 
   async stats(accountIds?: string[]): Promise<{ total: number; byAccount: Record<string, number> }> {
