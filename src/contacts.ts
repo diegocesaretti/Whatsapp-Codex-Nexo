@@ -209,7 +209,7 @@ export class WhatsappContactsStore {
     });
   }
 
-  async list(input: { accountIds?: string[]; query?: string; limit?: number; offset?: number } = {}): Promise<{ contacts: WhatsappContact[]; total: number }> {
+  async list(input: { accountIds?: string[]; query?: string; limit?: number; offset?: number } = {}): Promise<{ contacts: WhatsappContact[]; total: number; importedTotal: number }> {
     await this.mutation;
     const file = await this.load();
     const selected = input.accountIds ? new Set(input.accountIds) : undefined;
