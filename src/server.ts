@@ -8,6 +8,7 @@ import { WhatsappSummarizer } from "./llm.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { AppSettingsStore, getWindowsAutostart, setWindowsAutostart } from "./settings.js";
 import { BridgeStore } from "./store.js";
+import { WhatsappContactsStore } from "./contacts.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 import { renderAdminPage } from "./ui.js";
 import type { AccountRole, OutputConversationMessage } from "./types.js";
@@ -51,6 +52,7 @@ export function createBridgeServer(
   conversationStore: OutputConversationStore,
   codexWorker: CodexConversationWorker,
   attachmentInbox?: AttachmentInbox,
+  contacts?: WhatsappContactsStore,
 ) {
   return createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${request.headers.host || `${config.host}:${config.port}`}`);
@@ -155,6 +157,28 @@ export function createBridgeServer(
         if (action === "logout") { await manager.logout(accountId); json(response, 200, { ok: true }); }
         else json(response, 200, action === "restart" ? await manager.restart(accountId) : await manager.start(accountId));
         return;
+      }
+      if (request.method === "GET" && path === "/api/contacts") {
+        if (!contacts) { json(response, 200, { contacts: [], total: 0 }); return; }
+        const inputs = (await store.listAccounts()).filter(account => account.role === "input");
+        const allowed = new Set(inputs.map(account => account.id));
+        const requested = url.searchParams.getAll("accountId");
+        if (requested.some(id => !allowed.has(id))) {
+          json(response, 403, { error: "contacts_input_account_required" }); return;
+        }
+        const accountIds = requested.length ? requested : inputs.map(account => account.id);
+        const query = url.searchParams.get("q")?.trim();
+        const rawLimit = Number(url.searchParams.get("limit") || 100);
+        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(500, Math.trunc(rawLimit))) : 100;
+        json(response, 200, {
+          ...(await contacts.list({ accountIds, query, limit })),
+          accounts: inputs.map(account => ({ id: account.id, label: account.label })),
+        }); return;
+      }
+      if (request.method === "GET" && path === "/api/contacts/status") {
+        if (!contacts) { json(response, 200, { total: 0, byAccount: {} }); return; }
+        const ids = (await store.listAccounts()).filter(account => account.role === "input").map(account => account.id);
+        json(response, 200, await contacts.stats(ids)); return;
       }
       if (request.method === "GET" && path === "/api/chats") {
         const accountIds = url.searchParams.getAll("accountId"); const query = url.searchParams.get("q")?.trim() || undefined; const limit = Number(url.searchParams.get("limit") || 50);

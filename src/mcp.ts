@@ -225,6 +225,26 @@ serveStdio(() => {
     return text(state.accounts);
   });
 
+  server.registerTool("list_whatsapp_contacts", {
+    description: "List automatically ingested WhatsApp address-book contacts from linked INPUT accounts, with account provenance. This is read-only; contacts do not authorize sending messages or accessing Codex.",
+    inputSchema: z.object({
+      query: z.string().max(160).optional(),
+      accountIds: z.array(z.string().uuid()).max(20).optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+    }),
+  }, async ({ query, accountIds, limit }) => {
+    const params = new URLSearchParams();
+    if (query) params.set("q", query);
+    for (const id of accountIds || []) params.append("accountId", id);
+    if (limit) params.set("limit", String(limit));
+    return text(await bridge(`/api/contacts?${params}`));
+  });
+
+  server.registerTool("whatsapp_contacts_status", {
+    description: "Report how many WhatsApp contacts Nexo has ingested per INPUT account. Not a count of the entire phone address book.",
+    inputSchema: z.object({}),
+  }, async () => text(await bridge("/api/contacts/status")));
+
   server.registerTool("list_whatsapp_chats", {
     description: "Discover conversations from read-only INPUT archives and return safe sendTarget values when known. Discovery never authorizes sending.",
     inputSchema: z.object({ query: z.string().min(1).max(160).optional(), accountIds: z.array(z.string().uuid()).max(20).optional(), limit: z.number().int().min(1).max(100).optional() }),

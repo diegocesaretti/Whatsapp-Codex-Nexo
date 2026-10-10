@@ -6,6 +6,7 @@ import { WhatsappSummarizer } from "./llm.js";
 import { installMultimodalCapture } from "./multimodal-capture.js";
 import { installInputAudioTranscription } from "./input-audio-capture.js";
 import { NexoBridgeStore } from "./nexo-store.js";
+import { WhatsappContactsStore } from "./contacts.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { createBridgeServer } from "./server.js";
 import { AppSettingsStore, setWindowsAutostart } from "./settings.js";
@@ -17,6 +18,7 @@ import { WhatsappManager } from "./whatsapp-manager.js";
 const settingsStore = new AppSettingsStore(config.dataDir);
 let settings = await settingsStore.get();
 const store = new NexoBridgeStore(config.dataDir, config.databaseUrl, settingsStore);
+const contacts = new WhatsappContactsStore(config.dataDir);
 const conversationStore = new OutputConversationStore(config.dataDir, config.databaseUrl);
 const attachmentInbox = new AttachmentInbox(config.dataDir);
 await retryTransientStartup("primary storage", () => store.init());
@@ -65,7 +67,7 @@ const identitySyncTimer = setInterval(() => {
 }, 15_000);
 identitySyncTimer.unref?.();
 
-const manager = new WhatsappManager(store, settingsStore, conversationStore, solPlugin);
+const manager = new WhatsappManager(store, settingsStore, conversationStore, solPlugin, contacts);
 installMultimodalCapture(manager, settingsStore, attachmentInbox);
 const inputAudio = installInputAudioTranscription(manager, settingsStore, attachmentInbox, store, solPlugin);
 if (settings.autoConnectLinkedAccounts) await manager.startLinkedAccounts();
@@ -90,7 +92,7 @@ whatsappWatchdogTimer.unref?.();
 
 const summarizer = new WhatsappSummarizer(store, settingsStore);
 const codexWorker = new CodexConversationWorker(config.dataDir, settingsStore, conversationStore, manager, attachmentInbox);
-const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore, codexWorker, attachmentInbox);
+const server = createBridgeServer(store, manager, settingsStore, summarizer, conversationStore, codexWorker, attachmentInbox, contacts);
 server.listen(config.port, config.host, () => {
   console.log(`WhatsApp Codex Nexo listening on http://${config.host}:${config.port}`);
   console.log(`Storage: ${store.storageMode}${store.storageMode === "neon" ? ` (schema whatsapp_nexo · source ${config.databaseSource})` : " (.data local)"}`);

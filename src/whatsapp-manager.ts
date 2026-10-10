@@ -16,6 +16,7 @@ import { prepareOutboundMedia, type OutboundMediaInput } from "./outbound-media.
 import { isAuthorizedPhone, phoneNumberFromJid, safePhoneJid } from "./output-conversation-auth.js";
 import { AppSettingsStore } from "./settings.js";
 import { SolPluginClient } from "./sol-plugin-client.js";
+import { WhatsappContactsStore } from "./contacts.js";
 import { BridgeStore } from "./store.js";
 import {
   detectWhatsappMessageType,
@@ -159,6 +160,7 @@ export class WhatsappManager {
     private readonly settingsStore?: AppSettingsStore,
     private readonly conversationStore?: OutputConversationStore,
     private readonly solPlugin?: SolPluginClient,
+    private readonly contacts?: WhatsappContactsStore,
   ) {}
 
   getStatus(accountId: string): RuntimeStatus {
@@ -277,6 +279,7 @@ export class WhatsappManager {
       });
     }
     await this.store.deleteAccount(accountId);
+    if (account?.role === "input") await this.contacts?.deleteAccount(accountId);
     if (this.settingsStore) {
       await this.settingsStore.syncInputIdentities(await this.store.listAccounts()).catch(() => undefined);
     }
@@ -613,6 +616,21 @@ export class WhatsappManager {
       });
     });
 
+    // Contacts can arrive both during full-history replay and later as WhatsApp
+    // contact events. Only INPUT accounts become searchable address books.
+    socket.ev.on("contacts.upsert", (observations) => {
+      if (account.role !== "input" || !this.contacts || runtime.generation !== generation) return;
+      this.enqueue(runtime, async () => {
+        await this.contacts?.ingest(account.id, observations, "realtime");
+      });
+    });
+    socket.ev.on("contacts.update", (observations) => {
+      if (account.role !== "input" || !this.contacts || runtime.generation !== generation) return;
+      this.enqueue(runtime, async () => {
+        await this.contacts?.ingest(account.id, observations, "realtime");
+      });
+    });
+
     socket.ev.on("messaging-history.set", (history) => {
       if (account.role !== "input") return;
       runtime.historyMessages += history.messages.length;
@@ -624,6 +642,7 @@ export class WhatsappManager {
           ...history.chats.map((chat) => ({ jid: chat.id, name: (chat as { name?: string | null }).name })),
           ...contacts.map((contact) => ({ jid: contact.id, name: contact.name ?? contact.notify })),
         ]);
+        await this.contacts?.ingest(account.id, contacts, "history");
         for (const message of history.messages) {
           await this.ingestMessage(account, runtime, message, "history", socket.user?.id);
         }
