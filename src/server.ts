@@ -9,6 +9,7 @@ import { OutputConversationStore } from "./output-conversation-store.js";
 import { AppSettingsStore, getWindowsAutostart, setWindowsAutostart } from "./settings.js";
 import { BridgeStore } from "./store.js";
 import { WhatsappContactsStore } from "./contacts.js";
+import { parseContactFile } from "./contact-import.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 import { renderAdminPage } from "./ui.js";
 import type { AccountRole, OutputConversationMessage } from "./types.js";
@@ -168,10 +169,12 @@ export function createBridgeServer(
         }
         const accountIds = requested.length ? requested : inputs.map(account => account.id);
         const query = url.searchParams.get("q")?.trim();
+        const rawOffset = Number(url.searchParams.get("offset") || 0);
+        const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.min(1_000_000, Math.trunc(rawOffset))) : 0;
         const rawLimit = Number(url.searchParams.get("limit") || 100);
         const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(500, Math.trunc(rawLimit))) : 100;
         json(response, 200, {
-          ...(await contacts.list({ accountIds, query, limit })),
+          ...(await contacts.list({ accountIds, query, limit, offset })),
           accounts: inputs.map(account => ({ id: account.id, label: account.label })),
         }); return;
       }
@@ -179,6 +182,48 @@ export function createBridgeServer(
         if (!contacts) { json(response, 200, { total: 0, byAccount: {} }); return; }
         const ids = (await store.listAccounts()).filter(account => account.role === "input").map(account => account.id);
         json(response, 200, await contacts.stats(ids)); return;
+      }
+      if (request.method === "POST" && path === "/api/contacts/import") {
+        if (!contacts) { json(response, 503, { error: "contacts_unavailable" }); return; }
+        // JSON and same-origin browser upload only: a remote page cannot
+        // cross-post a contact list into the unauthenticated loopback daemon.
+        const contentType = String(request.headers["content-type"] || "").toLowerCase().split(";")[0]?.trim();
+        if (contentType !== "application/json") { json(response, 415, { error: "json_content_type_required" }); return; }
+        if (request.headers.origin) {
+          try {
+            if (new URL(request.headers.origin).host !== request.headers.host) {
+              json(response, 403, { error: "contact_import_same_origin_required" }); return;
+            }
+          } catch {
+            json(response, 403, { error: "contact_import_same_origin_required" }); return;
+          }
+        }
+        const body = await readJson<{ accountId?: unknown; fileName?: unknown; content?: unknown; countryCode?: unknown }>(request, 4 * 1024 * 1024);
+        if (typeof body.accountId !== "string" || typeof body.fileName !== "string" || typeof body.content !== "string") {
+          json(response, 400, { error: "accountId_fileName_and_content_required" }); return;
+        }
+        const account = await store.getAccount(body.accountId);
+        if (!account || account.role !== "input") {
+          json(response, 403, { error: "contacts_input_account_required" }); return;
+        }
+        if (!/\.((csv)|(vcf))$/i.test(body.fileName) || body.fileName.length > 240) {
+          json(response, 400, { error: "contact_import_unsupported_format" }); return;
+        }
+        if (typeof body.countryCode !== "undefined" && (typeof body.countryCode !== "string" || !/^\d{1,4}$/.test(body.countryCode))) {
+          json(response, 400, { error: "contact_import_invalid_country_code" }); return;
+        }
+        try {
+          const parsed = parseContactFile(body.fileName, body.content);
+          const result = await contacts.importContacts(account.id, parsed.contacts, (body.countryCode as string | undefined) || "54");
+          json(response, 200, {
+            ok: true, accountId: account.id, accountLabel: account.label, format: parsed.format,
+            parsed: parsed.contacts.length, added: result.added, updated: result.updated,
+            duplicates: result.duplicates, skipped: parsed.skipped + result.invalid,
+          });
+        } catch (error) {
+          json(response, 400, { error: errorMessage(error) });
+        }
+        return;
       }
       if (request.method === "GET" && path === "/api/chats") {
         const accountIds = url.searchParams.getAll("accountId"); const query = url.searchParams.get("q")?.trim() || undefined; const limit = Number(url.searchParams.get("limit") || 50);
