@@ -209,12 +209,12 @@ export function createBridgeServer(
         if (!/\.((csv)|(vcf))$/i.test(body.fileName) || body.fileName.length > 240) {
           json(response, 400, { error: "contact_import_unsupported_format" }); return;
         }
-        if (typeof body.countryCode !== "undefined" && (typeof body.countryCode !== "string" || !/^\d{1,4}$/.test(body.countryCode))) {
+        if (typeof body.countryCode !== "undefined" && (typeof body.countryCode !== "string" || (body.countryCode !== "" && !/^\d{1,4}$/.test(body.countryCode)))) {
           json(response, 400, { error: "contact_import_invalid_country_code" }); return;
         }
         try {
           const parsed = parseContactFile(body.fileName, body.content);
-          const result = await contacts.importContacts(account.id, parsed.contacts, (body.countryCode as string | undefined) || "54");
+          const result = await contacts.importContacts(account.id, parsed.contacts, typeof body.countryCode === "string" ? body.countryCode : "54");
           json(response, 200, {
             ok: true, accountId: account.id, accountLabel: account.label, format: parsed.format,
             parsed: parsed.contacts.length, added: result.added, updated: result.updated,
