@@ -134,7 +134,7 @@ export class WhatsappContactsStore {
   async list(input: { accountIds?: string[]; query?: string; limit?: number } = {}): Promise<{ contacts: WhatsappContact[]; total: number }> {
     await this.mutation;
     const file = await this.load();
-    const selected = input.accountIds?.length ? new Set(input.accountIds) : undefined;
+    const selected = input.accountIds ? new Set(input.accountIds) : undefined;
     const needle = input.query?.trim().toLocaleLowerCase("es-AR") ?? "";
     const contacts = Object.entries(file.accounts)
       .filter(([accountId]) => !selected || selected.has(accountId))
@@ -149,7 +149,7 @@ export class WhatsappContactsStore {
   async stats(accountIds?: string[]): Promise<{ total: number; byAccount: Record<string, number> }> {
     await this.mutation;
     const file = await this.load();
-    const selected = accountIds?.length ? new Set(accountIds) : undefined;
+    const selected = accountIds ? new Set(accountIds) : undefined;
     const byAccount: Record<string, number> = {};
     for (const [accountId, bucket] of Object.entries(file.accounts)) {
       if (!selected || selected.has(accountId)) byAccount[accountId] = Object.keys(bucket).length;
