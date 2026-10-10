@@ -1,6 +1,7 @@
 import { ensureAdvancedSettingsPanel } from "./ui-v5-advanced.js";
 import { augmentAdminPageV5 } from "./ui-v5-extras.js";
 import { renderAdminPageV5 } from "./ui-v5.js";
+import { enhanceNexoContactsUi } from "./ui-contacts.js";
 
 export function renderAdminPage(): string {
   // ui-v5 is emitted from a TypeScript template literal. Preserve the two
@@ -10,5 +11,5 @@ export function renderAdminPage(): string {
   const base = renderAdminPageV5()
     .replace("replace(/D/g,'')", "replace(/\\D/g,'')")
     .replace("split(/s+/)[0]", "split(/\\s+/)[0]");
-  return ensureAdvancedSettingsPanel(augmentAdminPageV5(base));
+  return enhanceNexoContactsUi(ensureAdvancedSettingsPanel(augmentAdminPageV5(base)));
 }
