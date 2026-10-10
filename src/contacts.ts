@@ -222,7 +222,7 @@ export class WhatsappContactsStore {
       .sort((a, b) => (a.displayName || a.phone || a.jid).localeCompare(b.displayName || b.phone || b.jid, "es-AR"));
     const limit = Math.max(1, Math.min(500, Number.isFinite(input.limit) ? Math.trunc(input.limit!) : 100));
     const offset = Math.max(0, Math.min(1_000_000, Math.trunc(input.offset ?? 0)));
-    return { contacts: contacts.slice(offset, offset + limit), total: contacts.length };
+    return { contacts: contacts.slice(offset, offset + limit), total: contacts.length, importedTotal: contacts.filter(c => c.importedName || c.sources?.includes("import")).length };
   }
 
   async stats(accountIds?: string[]): Promise<{ total: number; byAccount: Record<string, number> }> {
