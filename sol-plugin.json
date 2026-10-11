@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "nexo-whatsapp",
   "name": "Nexo · WhatsApp",
-  "version": "0.11.8",
+  "version": "0.11.9",
   "description": "WhatsApp input/output connector for SOL with secure bidirectional multimedia, member-scoped WhatsApp history search, Codex OAuth media processing, canonical people identities and authoritative low-latency Codex access to authorized SOL plugin tools.",
   "runtime": "node",
   "entry": "dist/index.js",
@@ -15,7 +15,8 @@
     "output.whatsapp.media",
     "identity.whatsapp",
     "tool.whatsapp",
-    "consumer.sol-plugin-tools"
+    "consumer.sol-plugin-tools",
+    "provider.sol-mcp-contacts"
   ],
   "requires": [
     "plugin-api.v1",
@@ -23,6 +24,7 @@
     "input.write",
     "input.status",
     "identity.v1",
+    "mcp.register",
     "mcp.invoke.read",
     "filesystem.plugin-data"
   ],
@@ -32,6 +34,7 @@
     "input.status",
     "input.unregister",
     "identity.write",
+    "mcp.register",
     "mcp.invoke.read",
     "mcp.invoke.actions",
     "network.internet",
