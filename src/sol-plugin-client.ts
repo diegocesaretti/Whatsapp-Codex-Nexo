@@ -47,6 +47,23 @@ export class SolPluginClient {
     console.log(JSON.stringify({ type: "sol.plugin.log", level, message }));
   }
 
+  async registerMcpTools(
+    callbackUrl: string,
+    tools: ReadonlyArray<{
+      name: string;
+      description: string;
+      requiredScope: "read";
+      visibility: "private";
+      inputSchema: Record<string, unknown>;
+    }>,
+  ): Promise<void> {
+    if (!this.enabled) return;
+    await this.request("/v1/plugin-api/mcp/tools/register", {
+      callbackUrl,
+      tools: [...tools],
+    });
+  }
+
   async listAvailableTools(): Promise<SolRuntimeTool[]> {
     if (!this.enabled) return [];
     const response = await this.request<{ tools?: SolRuntimeTool[] }>("/v1/plugin-api/mcp/tools/available", undefined, "GET");
