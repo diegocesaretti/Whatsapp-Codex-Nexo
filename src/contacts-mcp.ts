@@ -74,8 +74,8 @@ export async function handleNexoContactsMcp(
     return { status: 403, payload: { error: "contacts_input_account_required" } };
   }
   if (args.query !== undefined && (typeof args.query !== "string" || args.query.length > 200)) return invalid();
-  if (args.limit !== undefined && (!Number.isInteger(args.limit) || (args.limit as number) < 1 || (args.limit as number) > 100)) return invalid();
-  if (args.offset !== undefined && (!Number.isInteger(args.offset) || (args.offset as number) < 0 || (args.offset as number) > 1_000_000)) return invalid();
+  if (args.limit !== undefined && (typeof args.limit !== "number" || !Number.isInteger(args.limit) || args.limit < 1 || args.limit > 100)) return invalid();
+  if (args.offset !== undefined && (typeof args.offset !== "number" || !Number.isInteger(args.offset) || args.offset < 0 || args.offset > 1_000_000)) return invalid();
 
   const accountIds = typeof id === "string" ? [id] : [...inputIds];
   const query = typeof args.query === "string" ? args.query.trim() : undefined;
