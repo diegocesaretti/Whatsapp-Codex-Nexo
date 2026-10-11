@@ -9,6 +9,7 @@ import { OutputConversationStore } from "./output-conversation-store.js";
 import { AppSettingsStore, getWindowsAutostart, setWindowsAutostart } from "./settings.js";
 import { BridgeStore } from "./store.js";
 import { WhatsappContactsStore } from "./contacts.js";
+import { handleNexoContactsMcp } from "./contacts-mcp.js";
 import { parseContactFile } from "./contact-import.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 import { renderAdminPage } from "./ui.js";
@@ -59,6 +60,22 @@ export function createBridgeServer(
     const url = new URL(request.url || "/", `http://${request.headers.host || `${config.host}:${config.port}`}`);
     const path = url.pathname;
     try {
+      if (request.method === "POST" && path === "/internal/sol-mcp/contacts") {
+        // SOL Core authenticates the caller and enforces private, member-scoped
+        // visibility. The callback itself cannot be invoked over the network.
+        const remote = request.socket.remoteAddress?.toLowerCase();
+        if (!remote || !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote)) {
+          json(response, 403, { error: "sol_mcp_callback_loopback_required" }); return;
+        }
+        if (!request.headers["content-type"]?.toLowerCase().includes("application/json")) {
+          json(response, 415, { error: "json_required" }); return;
+        }
+        const result = await handleNexoContactsMcp(
+          await readJson<unknown>(request), await store.listAccounts(), contacts,
+        );
+        json(response, result.status, result.payload);
+        return;
+      }
       if (request.method === "GET" && path === "/") { html(response, renderAdminPage()); return; }
       if (request.method === "GET" && path === "/health") {
         const settings = await settingsStore.get();
