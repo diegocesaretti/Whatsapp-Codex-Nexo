@@ -44,8 +44,9 @@ try:
     def recognize(device, compute_type):
         model = WhisperModel(model_name, device=device, compute_type=compute_type,
                              cpu_threads=4, num_workers=1, local_files_only=True)
-        segments, _ = model.transcribe(samples, language=language, beam_size=5,
-                                        vad_filter=True)
+        # WhatsApp voice notes are already short; avoid the extra Silero ONNX VAD runtime.
+        segments, _ = model.transcribe(samples, language=language, beam_size=2,
+                                        vad_filter=False)
         # Segment decoding is lazy; realize it inside try to catch CUDA errors.
         result = " ".join(seg.text.strip() for seg in segments).strip()
         if not result:
