@@ -7,6 +7,7 @@ import { installMultimodalCapture } from "./multimodal-capture.js";
 import { installInputAudioTranscription } from "./input-audio-capture.js";
 import { NexoBridgeStore } from "./nexo-store.js";
 import { WhatsappContactsStore } from "./contacts.js";
+import { NEXO_CONTACT_MCP_TOOLS } from "./contacts-mcp.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
 import { createBridgeServer } from "./server.js";
 import { AppSettingsStore, setWindowsAutostart } from "./settings.js";
@@ -101,6 +102,18 @@ server.listen(config.port, config.host, () => {
   console.log(`Codex resident worker: ${settings.codexWorker.enabled ? "enabled" : "disabled"}`);
   console.log(`Multimodal inbox: ${settings.multimodal.enabled ? `enabled · max ${settings.multimodal.maxFileMb} MB · retention ${settings.multimodal.retentionDays}d` : "disabled"}`);
   console.log("Multiple INPUT accounts are read-only; OUTPUT conversation replies and media are isolated from the searchable INPUT archive.");
+  if (solPlugin.enabled) {
+    void retryTransientStartup("Nexo SOL MCP contacts registration", async () => {
+      await solPlugin.registerMcpTools(
+        `http://127.0.0.1:${config.port}/internal/sol-mcp/contacts`,
+        NEXO_CONTACT_MCP_TOOLS,
+      );
+      solPlugin.log("info", "Read-only private contacts tools registered in SOL MCP");
+    }).catch(error => solPlugin.log(
+      "error",
+      `Could not register private contact tools: ${error instanceof Error ? error.message : String(error)}`,
+    ));
+  }
   solPlugin.reportReady({
     bridgeUrl: `http://${config.host}:${config.port}`,
     storage: store.storageMode,
