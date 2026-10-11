@@ -8,6 +8,7 @@ on:
       - package.json
       - sol-plugin.json
       - scripts/prune-solplugin.mjs
+      - scripts/local-whisper.py
       - .github/workflows/sol-plugin-release.yml
   workflow_dispatch:
 
@@ -33,6 +34,8 @@ jobs:
           mkdir -p .solplugin-stage
           cp package.json sol-plugin.json .solplugin-stage/
           cp -R dist .solplugin-stage/dist
+          mkdir -p .solplugin-stage/scripts
+          cp scripts/local-whisper.py .solplugin-stage/scripts/
           cd .solplugin-stage
           npm install --omit=dev --ignore-scripts --no-package-lock
           node ../scripts/prune-solplugin.mjs node_modules
