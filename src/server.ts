@@ -6,6 +6,7 @@ import { getInputAudioStatus } from "./input-audio-status.js";
 import { config } from "./config.js";
 import { WhatsappSummarizer } from "./llm.js";
 import { OutputConversationStore } from "./output-conversation-store.js";
+import { readPulseAutomationConfig, verifyPulseBearer, validatePulseMessage } from "./pulse-automation.js";
 import { AppSettingsStore, getWindowsAutostart, setWindowsAutostart } from "./settings.js";
 import { BridgeStore } from "./store.js";
 import { WhatsappContactsStore } from "./contacts.js";
@@ -56,6 +57,8 @@ export function createBridgeServer(
   attachmentInbox?: AttachmentInbox,
   contacts?: WhatsappContactsStore,
 ) {
+  const pulseInflight = new Set<string>();
+  let pulseCounter={day:"",count:0};
   return createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${request.headers.host || `${config.host}:${config.port}`}`);
     const path = url.pathname;
@@ -333,6 +336,36 @@ export function createBridgeServer(
           reason: body.reason,
         });
         json(response, 200, { sent: true, ...result }); return;
+      }
+      if (request.method === "POST" && path === "/api/automation/pulse/send") {
+        const grant = readPulseAutomationConfig();
+        if (!verifyPulseBearer(request.headers.authorization,grant.token)) {
+          json(response,401,{error:"pulse_token_required"});return;
+        }
+        const settings=await settingsStore.get();
+        let payload;
+        try {
+          payload=validatePulseMessage(await readJson(request,4096),grant,settings.outputConversation.authorizedNumbers);
+        } catch(error) {
+          json(response,403,{error:errorMessage(error)});return;
+        }
+        const reason="automation:sol_pulse:"+payload.eventId;
+        if(await store.hasOutboundReason(reason)){
+          json(response,200,{sent:false,duplicate:true});return;
+        }
+        if(pulseInflight.has(reason)){
+          json(response,409,{error:"pulse_send_in_progress"});return;
+        }
+        const day=new Intl.DateTimeFormat("en-CA",{timeZone:"America/Argentina/Cordoba",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+        if(pulseCounter.day!==day)pulseCounter={day,count:0};
+        if(pulseCounter.count>=12){json(response,429,{error:"pulse_daily_cap"});return;}
+        pulseInflight.add(reason);
+        try{
+          const audit=await manager.sendText({to:payload.to,text:payload.text,reason});
+          pulseCounter.count++;
+          json(response,200,{sent:true,messageId:audit.messageId});
+        }finally{pulseInflight.delete(reason);}
+        return;
       }
       if (request.method === "POST" && path === "/api/automation/morning-brief/send") {
         const expected = process.env.NEXO_AUTOMATION_TOKEN?.trim();
