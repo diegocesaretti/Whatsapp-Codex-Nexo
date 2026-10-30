@@ -8,6 +8,8 @@ import { OutputConversationStore } from "./output-conversation-store.js";
 import { AppSettingsStore } from "./settings.js";
 import type { OutputConversationMessage } from "./types.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
+import { SolPluginClient } from "./sol-plugin-client.js";
+import { handleSolAgentWhatsAppCommand } from "./sol-agent-command.js";
 
 const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 const DEFAULT_REASONING_EFFORT = "low";
@@ -366,6 +368,31 @@ export class CodexConversationWorker {
     let presenceTimer: NodeJS.Timeout | undefined;
     let presenceStarted = false;
     try {
+      // Deterministic owner-only agent commands are handled BEFORE Codex.
+      // No AI output, quoted history, group message, or recovered source data
+      // can create/pause a mission via this path. The Nexo OUTPUT conversation
+      // already provides a sender-verified, authorized direct-chat message.
+      if (inbound.length === 1 && newest.text?.trim().toLowerCase().startsWith("/agente")) {
+        const settings = await this.settingsStore.get();
+        const sol = new SolPluginClient();
+        const answer = await handleSolAgentWhatsAppCommand({
+          text: newest.text,
+          peerPhone,
+          settings,
+          invoke: (name, args) => sol.invokeSolAgentCommand(name, args),
+        });
+        if (answer !== null) {
+          await this.manager.replyToOutputConversationMessage({
+            inboundMessageId: newest.id,
+            text: answer.slice(0, 3500),
+            reason: "SOL Agent explicit owner command",
+          });
+          this.failures.delete(newest.id);
+          this.lastError = undefined;
+          this.lastSuccessAt = new Date().toISOString();
+          return;
+        }
+      }
       let cli = await this.refreshCodexCli(false);
       if (!cli.available || !cli.path) throw new Error(cli.error || "Codex CLI no encontrado");
 

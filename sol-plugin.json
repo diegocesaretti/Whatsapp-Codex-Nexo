@@ -2,8 +2,8 @@
   "schemaVersion": 2,
   "id": "nexo-whatsapp",
   "name": "Nexo · WhatsApp",
-  "version": "0.11.9",
-  "description": "WhatsApp input/output connector for SOL with secure bidirectional multimedia, member-scoped WhatsApp history search, Codex OAuth media processing, canonical people identities and authoritative low-latency Codex access to authorized SOL plugin tools.",
+  "version": "0.12.0",
+  "description": "WhatsApp Nexo connector with opt-in, owner-bound SOL Agent mission commands and existing Codex/output conversation capabilities.",
   "runtime": "node",
   "entry": "dist/index.js",
   "args": [],
@@ -26,7 +26,8 @@
     "identity.v1",
     "mcp.register",
     "mcp.invoke.read",
-    "filesystem.plugin-data"
+    "filesystem.plugin-data",
+    "mcp.invoke.submit"
   ],
   "permissions": [
     "input.register",
@@ -38,7 +39,8 @@
     "mcp.invoke.read",
     "mcp.invoke.actions",
     "network.internet",
-    "filesystem.plugin-data"
+    "filesystem.plugin-data",
+    "mcp.invoke.submit"
   ],
   "settings": [
     {
@@ -70,12 +72,30 @@
       "required": false,
       "default": "low",
       "options": [
-        { "value": "none", "label": "None · mínimo consumo" },
-        { "value": "low", "label": "Low · recomendado" },
-        { "value": "medium", "label": "Medium" },
-        { "value": "high", "label": "High" },
-        { "value": "xhigh", "label": "Extra high" },
-        { "value": "max", "label": "Max" }
+        {
+          "value": "none",
+          "label": "None · mínimo consumo"
+        },
+        {
+          "value": "low",
+          "label": "Low · recomendado"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "high",
+          "label": "High"
+        },
+        {
+          "value": "xhigh",
+          "label": "Extra high"
+        },
+        {
+          "value": "max",
+          "label": "Max"
+        }
       ]
     },
     {
@@ -87,10 +107,54 @@
       "required": false,
       "default": "low",
       "options": [
-        { "value": "low", "label": "Low · recomendado" },
-        { "value": "medium", "label": "Medium" },
-        { "value": "high", "label": "High" }
+        {
+          "value": "low",
+          "label": "Low · recomendado"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "high",
+          "label": "High"
+        }
       ]
+    },
+    {
+      "key": "solAgentCommandsEnabled",
+      "label": "Permitir comandos /agente por WhatsApp (propietario)",
+      "type": "boolean",
+      "description": "Desactivado de origen. Solo un número autorizado y fijado por el administrador puede modificar objetivos del agente.",
+      "env": "NEXO_SOL_AGENT_COMMANDS_ENABLED",
+      "required": false,
+      "default": false
+    },
+    {
+      "key": "solAgentOwnerPhone",
+      "label": "Número propietario habilitado para comandos /agente",
+      "type": "text",
+      "description": "Número internacional completo. Debe coincidir con un contacto de Nexo identificado como propietario y autorizado para OUTPUT.",
+      "env": "NEXO_SOL_AGENT_OWNER_PHONE",
+      "required": false,
+      "default": ""
+    },
+    {
+      "key": "solAgentNotifyEnabled",
+      "label": "Permitir aviso proactivo de SOL Agent (máximo uno al día)",
+      "type": "boolean",
+      "description": "Desactivado por defecto. El mensaje solo puede llegar al número propietario previamente autorizado, de 8 a 21 h (Argentina).",
+      "env": "NEXO_SOL_AGENT_NOTIFY_ENABLED",
+      "required": false,
+      "default": false
+    },
+    {
+      "key": "solAgentNotifyToken",
+      "label": "Token privado para notificaciones SOL Agent",
+      "type": "secret",
+      "description": "Secreto independiente del token de Morning Brief; debe tener al menos 24 caracteres. Nunca compartir ni publicar.",
+      "env": "NEXO_SOL_AGENT_NOTIFY_TOKEN",
+      "required": false
     }
   ],
   "distribution": {

@@ -13,6 +13,7 @@ import { handleNexoContactsMcp } from "./contacts-mcp.js";
 import { parseContactFile } from "./contact-import.js";
 import { WhatsappManager } from "./whatsapp-manager.js";
 import { renderAdminPage } from "./ui.js";
+import { checkSolAgentNotification } from "./sol-agent-notify.js";
 import type { AccountRole, OutputConversationMessage } from "./types.js";
 
 async function readJson<T>(request: IncomingMessage, maxBytes = 256_000): Promise<T> {
@@ -56,6 +57,7 @@ export function createBridgeServer(
   attachmentInbox?: AttachmentInbox,
   contacts?: WhatsappContactsStore,
 ) {
+  const agentNotifyInFlight = new Set<string>();
   return createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${request.headers.host || `${config.host}:${config.port}`}`);
     const path = url.pathname;
@@ -333,6 +335,40 @@ export function createBridgeServer(
           reason: body.reason,
         });
         json(response, 200, { sent: true, ...result }); return;
+      }
+      if (request.method === "POST" && path === "/api/automation/sol-agent/notify") {
+        // A separate grant, never the morning-brief token or interactive
+        // confirmedByUser path. A recipient cannot be chosen by the caller.
+        const remote=request.socket.remoteAddress?.toLowerCase();
+        if(!remote||!["127.0.0.1","::1","::ffff:127.0.0.1"].includes(remote)){
+          json(response,403,{error:"sol_agent_notify_loopback_required"});return;
+        }
+        if(!request.headers["content-type"]?.toLowerCase().includes("application/json")){
+          json(response,415,{error:"json_required"});return;
+        }
+        let grant: {reason:string;to:string;text:string};
+        try{
+          const data=await readJson<unknown>(request,2048);
+          grant=checkSolAgentNotification({
+            token:request.headers.authorization?.replace(/^Bearer\\s+/i,"").trim(),
+            body:data,settings:await settingsStore.get()
+          });
+        }catch(error){
+          const code=error instanceof Error?error.message:"sol_agent_notify_invalid";
+          json(response,/unauthorized/.test(code)?401:/quiet_hours/.test(code)?429:403,{error:code});return;
+        }
+        if(agentNotifyInFlight.has(grant.reason)){json(response,409,{error:"sol_agent_notification_in_progress"});return;}
+        agentNotifyInFlight.add(grant.reason);
+        try{
+          if(await store.hasOutboundReason(grant.reason)){
+            json(response,200,{sent:false,duplicate:true});return;
+          }
+          const audit=await manager.sendText({
+            to:grant.to,text:grant.text,reason:grant.reason
+          });
+          json(response,200,{sent:true,messageId:audit.messageId});
+        }finally{agentNotifyInFlight.delete(grant.reason);}
+        return;
       }
       if (request.method === "POST" && path === "/api/automation/morning-brief/send") {
         const expected = process.env.NEXO_AUTOMATION_TOKEN?.trim();
