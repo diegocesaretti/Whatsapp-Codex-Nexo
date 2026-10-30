@@ -138,6 +138,23 @@
       "env": "NEXO_SOL_AGENT_OWNER_PHONE",
       "required": false,
       "default": ""
+    },
+    {
+      "key": "solAgentNotifyEnabled",
+      "label": "Permitir aviso proactivo de SOL Agent (máximo uno al día)",
+      "type": "boolean",
+      "description": "Desactivado por defecto. El mensaje solo puede llegar al número propietario previamente autorizado, de 8 a 21 h (Argentina).",
+      "env": "NEXO_SOL_AGENT_NOTIFY_ENABLED",
+      "required": false,
+      "default": false
+    },
+    {
+      "key": "solAgentNotifyToken",
+      "label": "Token privado para notificaciones SOL Agent",
+      "type": "secret",
+      "description": "Secreto independiente del token de Morning Brief; debe tener al menos 24 caracteres. Nunca compartir ni publicar.",
+      "env": "NEXO_SOL_AGENT_NOTIFY_TOKEN",
+      "required": false
     }
   ],
   "distribution": {
