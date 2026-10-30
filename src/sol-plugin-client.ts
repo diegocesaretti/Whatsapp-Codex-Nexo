@@ -78,6 +78,22 @@ export class SolPluginClient {
     return await this.request(route, { name: tool.name, arguments: args });
   }
 
+  // Deliberately NOT exposed to the Codex MCP tool catalog. Only deterministic
+  // /agente commands from an explicitly verified human may call these methods.
+  async invokeSolAgentCommand(
+    name: string, args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const readOnly = new Set(["sol_agent_missions", "sol_agent_proposals"]);
+    const submit = new Set(["sol_agent_goal_create", "sol_agent_goal_pause", "sol_agent_goal_wake", "sol_agent_feedback"]);
+    if (readOnly.has(name)) {
+      return this.request("/v1/plugin-api/mcp/tools/invoke-read", { name, arguments: args });
+    }
+    if (submit.has(name)) {
+      return this.request("/v1/plugin-api/mcp/tools/invoke-submit", { name, arguments: args });
+    }
+    throw new Error("sol_agent_command_not_allowlisted");
+  }
+
   async searchWhatsappHistory(query: string, limit?: number): Promise<Array<Record<string, unknown>>> {
     if (!this.enabled) throw new Error("SOL plugin bridge is unavailable");
     const response = await this.request<{ results?: Array<Record<string, unknown>> }>(
